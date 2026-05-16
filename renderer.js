@@ -899,6 +899,197 @@ const JARVIS_CONFIRMATIONS = [
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
+// LINKEDIN AUTOMATION HANDLERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+let linkedInState = {
+  isLoggedIn: false,
+  email: null,
+  currentTopic: null,
+  pendingContent: null
+};
+
+async function handleLinkedInCommand(action) {
+  console.log(`[LinkedIn] Command received: ${action}`);
+
+  switch(action) {
+    case 'login':
+      await linkedInLogin();
+      break;
+    case 'post':
+      await linkedInPost();
+      break;
+    case 'generate':
+      await linkedInGenerateContent();
+      break;
+    case 'schedule':
+      await linkedInSchedulePost();
+      break;
+    case 'close':
+      await linkedInClose();
+      break;
+  }
+}
+
+async function linkedInLogin() {
+  try {
+    jarvisTextEl.textContent = "Initializing LinkedIn connection, sir...";
+    
+    // Prompt user for credentials (in a real app, use secure input)
+    const email = prompt("Please enter your LinkedIn email:");
+    if (!email) {
+      jarvisTextEl.textContent = "LinkedIn login cancelled, sir.";
+      return;
+    }
+
+    const password = prompt("Please enter your LinkedIn password:");
+    if (!password) {
+      jarvisTextEl.textContent = "LinkedIn login cancelled, sir.";
+      return;
+    }
+
+    const result = await window.assistant.linkedInInit({ email, password });
+    
+    if (result.success) {
+      linkedInState.isLoggedIn = true;
+      linkedInState.email = email;
+      jarvisTextEl.textContent = "LinkedIn connection established, sir. Ready to post.";
+      speakTTS("LinkedIn connection established, sir. I'm ready to help you post content.");
+    } else {
+      jarvisTextEl.textContent = `LinkedIn login failed: ${result.error}`;
+      speakTTS(`LinkedIn login failed, sir. ${result.error}`);
+    }
+  } catch (err) {
+    console.error("[LinkedIn] Login error:", err);
+    jarvisTextEl.textContent = `Error: ${err.message}`;
+  }
+}
+
+async function linkedInPost() {
+  try {
+    if (!linkedInState.isLoggedIn) {
+      jarvisTextEl.textContent = "Please login to LinkedIn first, sir.";
+      speakTTS("Please login to LinkedIn first, sir.");
+      return;
+    }
+
+    const content = prompt("What would you like to post on LinkedIn?");
+    if (!content) {
+      jarvisTextEl.textContent = "Post cancelled, sir.";
+      return;
+    }
+
+    jarvisTextEl.textContent = "Posting to LinkedIn, sir...";
+    const result = await window.assistant.linkedInPost({ content });
+
+    if (result.success) {
+      jarvisTextEl.textContent = "Post published successfully, sir!";
+      speakTTS("Your LinkedIn post has been published successfully, sir.");
+    } else {
+      jarvisTextEl.textContent = `Post failed: ${result.error}`;
+      speakTTS(`Post failed, sir. ${result.error}`);
+    }
+  } catch (err) {
+    console.error("[LinkedIn] Post error:", err);
+    jarvisTextEl.textContent = `Error: ${err.message}`;
+  }
+}
+
+async function linkedInGenerateContent() {
+  try {
+    const topic = prompt("What topic would you like me to write about?");
+    if (!topic) {
+      jarvisTextEl.textContent = "Content generation cancelled, sir.";
+      return;
+    }
+
+    const tone = prompt("What tone? (professional/casual/inspirational)") || "professional";
+    const length = prompt("What length? (short/medium/long)") || "medium";
+
+    jarvisTextEl.textContent = "Generating LinkedIn content, sir...";
+    const result = await window.assistant.linkedInGenerateContent({ topic, tone, length });
+
+    if (result.success) {
+      linkedInState.pendingContent = result.content;
+      jarvisTextEl.textContent = `Generated content:\n\n${result.content}`;
+      speakTTS("I've generated LinkedIn content for you, sir. Would you like me to post it?");
+      
+      const shouldPost = confirm("Post this content to LinkedIn?");
+      if (shouldPost) {
+        const postResult = await window.assistant.linkedInPost({ content: result.content });
+        if (postResult.success) {
+          jarvisTextEl.textContent = "Content posted successfully, sir!";
+          speakTTS("Your LinkedIn post has been published, sir.");
+        }
+      }
+    } else {
+      jarvisTextEl.textContent = `Generation failed: ${result.error}`;
+      speakTTS(`Content generation failed, sir. ${result.error}`);
+    }
+  } catch (err) {
+    console.error("[LinkedIn] Generate error:", err);
+    jarvisTextEl.textContent = `Error: ${err.message}`;
+  }
+}
+
+async function linkedInSchedulePost() {
+  try {
+    if (!linkedInState.isLoggedIn) {
+      jarvisTextEl.textContent = "Please login to LinkedIn first, sir.";
+      speakTTS("Please login to LinkedIn first, sir.");
+      return;
+    }
+
+    const content = prompt("What content would you like to schedule?");
+    if (!content) {
+      jarvisTextEl.textContent = "Scheduling cancelled, sir.";
+      return;
+    }
+
+    const scheduleTime = prompt("When should this be posted? (YYYY-MM-DD HH:MM)");
+    if (!scheduleTime) {
+      jarvisTextEl.textContent = "Scheduling cancelled, sir.";
+      return;
+    }
+
+    jarvisTextEl.textContent = "Scheduling LinkedIn post, sir...";
+    const result = await window.assistant.linkedInPost({ 
+      content, 
+      schedule: true, 
+      scheduleTime: new Date(scheduleTime).toISOString() 
+    });
+
+    if (result.success) {
+      jarvisTextEl.textContent = `Post scheduled for ${scheduleTime}, sir!`;
+      speakTTS(`Your LinkedIn post has been scheduled for ${scheduleTime}, sir.`);
+    } else {
+      jarvisTextEl.textContent = `Scheduling failed: ${result.error}`;
+      speakTTS(`Scheduling failed, sir. ${result.error}`);
+    }
+  } catch (err) {
+    console.error("[LinkedIn] Schedule error:", err);
+    jarvisTextEl.textContent = `Error: ${err.message}`;
+  }
+}
+
+async function linkedInClose() {
+  try {
+    jarvisTextEl.textContent = "Closing LinkedIn session, sir...";
+    const result = await window.assistant.linkedInClose();
+    
+    if (result.success) {
+      linkedInState.isLoggedIn = false;
+      linkedInState.email = null;
+      jarvisTextEl.textContent = "LinkedIn session closed, sir.";
+      speakTTS("LinkedIn session has been closed, sir.");
+    }
+  } catch (err) {
+    console.error("[LinkedIn] Close error:", err);
+    jarvisTextEl.textContent = `Error: ${err.message}`;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // LOCAL RESPONSES — No API needed, instant & offline
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1059,6 +1250,33 @@ const LOCAL_RESPONSES = [
       "The only limit to your capabilities is the one you set yourself, sir. And from what I've seen, you don't believe in limits.",
       "Difficult roads often lead to beautiful destinations, sir. Keep pushing forward."
     ]},
+
+  // ── LinkedIn Commands ──
+  { patterns: ["post on linkedin", "linkedin post", "post to linkedin", "create linkedin post", "share on linkedin"],
+    responses: () => {
+      handleLinkedInCommand('post');
+      return "I'll help you post on LinkedIn, sir. Please provide the content you'd like to share.";
+    }},
+  { patterns: ["generate linkedin content", "create linkedin content", "write linkedin post", "linkedin content"],
+    responses: () => {
+      handleLinkedInCommand('generate');
+      return "I can generate LinkedIn content for you, sir. What topic would you like me to write about?";
+    }},
+  { patterns: ["schedule linkedin post", "schedule post", "schedule on linkedin"],
+    responses: () => {
+      handleLinkedInCommand('schedule');
+      return "I'll schedule a LinkedIn post for you, sir. What content would you like to schedule, and when?";
+    }},
+  { patterns: ["linkedin login", "login to linkedin", "connect linkedin"],
+    responses: () => {
+      handleLinkedInCommand('login');
+      return "I'm ready to connect to LinkedIn, sir. Please provide your email and password.";
+    }},
+  { patterns: ["close linkedin", "logout linkedin", "disconnect linkedin"],
+    responses: () => {
+      handleLinkedInCommand('close');
+      return "Closing LinkedIn session, sir.";
+    }},
 ];
 
 /**

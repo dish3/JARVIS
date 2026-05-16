@@ -5,6 +5,7 @@ const { exec } = require('child_process');
 const os = require('os');
 const fs = require('fs');
 const Groq = require('groq-sdk');
+const LinkedInAutomation = require('./linkedin-automation');
 
 console.log("[Main] JARVIS Core Initializing...");
 console.log(`[Main] Environment: SARVAM_KEY=${process.env.SARVAM_API_KEY ? 'Present' : 'Missing'}, GROQ_KEY=${process.env.GROQ_API_KEY ? 'Present' : 'Missing'}, OPENROUTER_KEY=${process.env.OPENROUTER_API_KEY ? 'Present' : 'Missing'}`);
@@ -764,4 +765,147 @@ ipcMain.handle('sarvam-stt', async (event, buffer) => {
 
 ipcMain.handle('get-env', (event, key) => {
   return process.env[key];
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LINKEDIN AUTOMATION HANDLERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+let linkedInInstance = null;
+
+/**
+ * Initialize LinkedIn automation with credentials
+ */
+ipcMain.handle('linkedin-init', async (event, { email, password }) => {
+  try {
+    console.log("[LinkedIn] Initializing with email:", email);
+    linkedInInstance = new LinkedInAutomation(email, password);
+    const result = await linkedInInstance.initialize();
+    return result;
+  } catch (err) {
+    console.error("[LinkedIn] Init error:", err);
+    return { success: false, error: err.message };
+  }
+});
+
+/**
+ * Generate LinkedIn post content using AI
+ */
+ipcMain.handle('linkedin-generate-content', async (event, { topic, tone = "professional", length = "medium" }) => {
+  try {
+    console.log(`[LinkedIn] Generating content for topic: ${topic}`);
+
+    const prompt = `Generate a compelling LinkedIn post about "${topic}" in a ${tone} tone. 
+    The post should be ${length} length (${length === 'short' ? '50-100' : length === 'medium' ? '100-200' : '200-300'} words).
+    Make it engaging, professional, and suitable for LinkedIn audience.
+    Include relevant hashtags at the end.
+    Do not include any markdown formatting, just plain text.`;
+
+    const messages = [
+      {
+        role: 'user',
+        content: prompt
+      }
+    ];
+
+    // Use Groq for fast content generation
+    const response = await groq.chat.completions.create({
+      messages: messages,
+      model: "llama-3.3-70b-versatile",
+      max_tokens: 500,
+      temperature: 0.7
+    });
+
+    const generatedContent = response.choices[0]?.message?.content || "";
+    console.log("[LinkedIn] Content generated successfully");
+
+    return { success: true, content: generatedContent };
+  } catch (err) {
+    console.error("[LinkedIn] Content generation error:", err);
+    return { success: false, error: err.message };
+  }
+});
+
+/**
+ * Create and post to LinkedIn
+ */
+ipcMain.handle('linkedin-post', async (event, { content, imageUrl = null, schedule = false, scheduleTime = null }) => {
+  try {
+    if (!linkedInInstance) {
+      return { success: false, error: "LinkedIn not initialized. Please login first." };
+    }
+
+    console.log("[LinkedIn] Creating post...");
+    const result = await linkedInInstance.createPost(content, imageUrl, schedule, scheduleTime);
+    return result;
+  } catch (err) {
+    console.error("[LinkedIn] Post error:", err);
+    return { success: false, error: err.message };
+  }
+});
+
+/**
+ * Close LinkedIn browser session
+ */
+ipcMain.handle('linkedin-close', async (event) => {
+  try {
+    if (linkedInInstance) {
+      await linkedInInstance.close();
+      linkedInInstance = null;
+      console.log("[LinkedIn] Session closed");
+      return { success: true, message: "LinkedIn session closed" };
+    }
+    return { success: true, message: "No active LinkedIn session" };
+  } catch (err) {
+    console.error("[LinkedIn] Close error:", err);
+    return { success: false, error: err.message };
+  }
+});
+
+/**
+ * Full workflow: Generate content, post to LinkedIn
+ */
+ipcMain.handle('linkedin-auto-post', async (event, { topic, tone = "professional", length = "medium", imageUrl = null, schedule = false, scheduleTime = null }) => {
+  try {
+    console.log("[LinkedIn] Starting auto-post workflow...");
+
+    // Step 1: Generate content
+    const genResult = await groq.chat.completions.create({
+      messages: [{
+        role: 'user',
+        content: `Generate a compelling LinkedIn post about "${topic}" in a ${tone} tone. 
+        The post should be ${length} length (${length === 'short' ? '50-100' : length === 'medium' ? '100-200' : '200-300'} words).
+        Make it engaging, professional, and suitable for LinkedIn audience.
+        Include relevant hashtags at the end.`
+      }],
+      model: "llama-3.3-70b-versatile",
+      max_tokens: 500,
+      temperature: 0.7
+    });
+
+    const generatedContent = genResult.choices[0]?.message?.content || "";
+    console.log("[LinkedIn] Content generated");
+
+    // Step 2: Post to LinkedIn
+    if (!linkedInInstance) {
+      return { success: false, error: "LinkedIn not initialized. Please login first." };
+    }
+
+    const postResult = await linkedInInstance.createPost(generatedContent, imageUrl, schedule, scheduleTime);
+
+    if (postResult.success) {
+      return {
+        success: true,
+        message: "Post created and published successfully",
+        content: generatedContent,
+        scheduled: schedule
+      };
+    } else {
+      return postResult;
+    }
+  } catch (err) {
+    console.error("[LinkedIn] Auto-post error:", err);
+    return { success: false, error: err.message };
+  }
 });

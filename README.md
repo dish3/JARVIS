@@ -72,13 +72,27 @@ The build output will be located in the `dist/` folder.
 
 ---
 
-## 🔧 Core Features
+## 🛠️ Core Features
 
 - **"Hey JARVIS"**: Start speaking anytime to interact.
 - **"Clap to Wake"**: A loud clap wakes JARVIS up with a cinematic intro sequence.
 - **Workspace Modes**: Say *"Setup coding workspace"* to automatically open Terminal, VS Code, and relevant browser tabs.
 - **System Telemetry**: Real-time monitoring of CPU, RAM, and Network on the HUD.
 - **Memory System**: JARVIS remembers facts you tell it about yourself (name, profession, etc.) across sessions.
+- **LinkedIn Automation**: Post, generate, and schedule LinkedIn content with voice commands.
+
+---
+
+## 📱 LinkedIn Automation
+
+JARVIS can now help you manage your LinkedIn presence with voice commands:
+
+- **Generate Content**: "Generate LinkedIn content" — AI creates posts on any topic
+- **Post Directly**: "Post on LinkedIn" — Share content instantly
+- **Schedule Posts**: "Schedule LinkedIn post" — Plan posts for later
+- **Auto-Post**: Full workflow from content generation to publishing
+
+See [LINKEDIN_AUTOMATION.md](./LINKEDIN_AUTOMATION.md) for detailed setup and usage.
 
 ---
 
