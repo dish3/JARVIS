@@ -97,5 +97,4 @@ See [LINKEDIN_AUTOMATION.md](./LINKEDIN_AUTOMATION.md) for detailed setup and us
 ---
 
 ## 👨‍💻 Created By
-**Akshat Singh** — Tech Creator & Developer.
-Designed to bring the future to the present.
+Disha Jain — Engineer and AI Tech devolper, "Have Dream to make true" !!
