@@ -125,17 +125,22 @@ Be concise and direct."""
         action = None
         parameters = {}
         response = ""
+        response_lines = []
+        in_response = False
         
         for line in lines:
             if line.startswith('TOOL:'):
+                in_response = False
                 tool_type = line.replace('TOOL:', '').strip().lower()
                 if tool_type == 'none':
                     tool_type = None
             elif line.startswith('ACTION:'):
+                in_response = False
                 action = line.replace('ACTION:', '').strip().lower()
                 if action == 'none':
                     action = None
             elif line.startswith('PARAMETERS:'):
+                in_response = False
                 try:
                     params_str = line.replace('PARAMETERS:', '').strip()
                     if params_str and params_str not in ('empty', 'NONE', '{}', ''):
@@ -145,14 +150,54 @@ Be concise and direct."""
                 except:
                     parameters = {}
             elif line.startswith('RESPONSE:'):
-                response = line.replace('RESPONSE:', '').strip()
+                in_response = True
+                first = line.replace('RESPONSE:', '').strip()
+                if first:
+                    response_lines.append(first)
+            elif in_response and line.strip():
+                import re as _re
+                cleaned = _re.sub(r'^response\s*:\s*', '', line.strip(), flags=_re.IGNORECASE)
+                # Stop collecting if Ollama switches to JSON output
+                if cleaned.startswith('"') or cleaned.startswith('{'):
+                    break
+                if cleaned:
+                    response_lines.append(cleaned)
+        
+        # Join all response lines, strip code fences and stray JSON chars
+        def clean(text: str) -> str:
+            bad = ('`', '{', '}', '```')
+            return text.strip() if not any(text.strip().startswith(b) for b in bad) else ''
+        
+        response = ' '.join(l for l in response_lines if clean(l)).strip()
+        # Strip any echoed RESPONSE: prefix Ollama sometimes adds (case-insensitive)
+        import re as _re
+        response = _re.sub(r'^response\s*:\s*', '', response, flags=_re.IGNORECASE).strip()
+        
+        # Final fallback: scan full text for first clean meaningful line
+        if not response:
+            for l in response_text.strip().split('\n'):
+                c = clean(l)
+                if c and not any(c.startswith(k) for k in ('TOOL:', 'ACTION:', 'PARAMETERS:', 'RESPONSE:')):
+                    response = c
+                    break
+        
+        if not response:
+            response = goal
+        
+        # Clean up response - remove JSON fragments and extra text
+        if response:
+            # Remove common artifacts
+            response = response.replace('RESPONse:', '').replace('RESPONSE:', '').strip()
+            # Take only first sentence if too long
+            if len(response) > 200:
+                response = response.split('.')[0] + '.'
         
         plan_result = {
             'requires_tool': tool_type is not None,
             'tool_type': tool_type,
             'action': action,
             'parameters': parameters,
-            'response': response if response else next((l for l in reversed(response_text.strip().split('\n')) if l.strip()),goal),
+            'response': response,
             'reasoning': response_text,
         }
         

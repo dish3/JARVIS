@@ -39,10 +39,49 @@ class Router:
                 r'^(search|google|find)\s+(?:for\s+)?(.+)$',
                 r'^(search\s+)?(?:google|web)\s+(?:for\s+)?(.+)$',
             ],
+            'web_search': [
+                r'^(search|google|look up|find|what is|who is|when is|where is|how to)\s+(.+)$',
+                r'^(search web|web search|search online)\s+(?:for\s+)?(.+)$',
+            ],
+            'linkedin_post': [
+                r'^post(?:\s+to)?\s+linkedin[:\s]+(.+?)\s*\|\s*image[:\s]+(.+)$',
+                r'^post(?:\s+to)?\s+linkedin[:\s]+(.+)$',
+                r'^linkedin\s+post[:\s]+(.+?)\s*\|\s*image[:\s]+(.+)$',
+                r'^linkedin\s+post[:\s]+(.+)$',
+                r'^share(?:\s+on)?\s+linkedin[:\s]+(.+)$',
+            ],
+            'linkedin_delete': [
+                r'^delete\s+(?:my\s+)?(?:last|latest|recent)\s+linkedin\s+post$',
+                r'^delete\s+linkedin\s+post$',
+                r'^remove\s+(?:my\s+)?(?:last|latest|recent)\s+linkedin\s+post$',
+                r'^linkedin\s+delete\s+(?:last\s+)?post$',
+            ],
             'terminal': [
                 r'^(run|execute|cmd|command)\s+(.+)$',
                 r'^(python|node|npm|pip)\s+(.+)$',
                 r'^(ls|dir|cd|mkdir|rm|cp|mv)\s+(.+)$',
+            ],
+            'git_status': [
+                r'^(?:git\s+)?status$',
+                r'^show\s+git\s+status$',
+            ],
+            'git_add': [
+                r'^(?:git\s+)?add\s+(.+)$',
+            ],
+            'git_commit': [
+                r'^(?:git\s+)?commit(?:\s+changes)?(?:\s+to\s+github)?(?:\s+and\s+push)?(?:\s+with\s+message\s+(?:"([^"]+)"|\'([^\']+)\'))?$' ,
+                r'^(?:git\s+)?commit(?:\s+changes)?(?:\s+to\s+github)?(?:\s+and\s+push)?(?:\s+with\s+message\s+(.+))$' ,
+            ],
+            'git_push': [
+                r'^(?:git\s+)?push(?:\s+to\s+([A-Za-z0-9_-]+))?(?:\s+([A-Za-z0-9_/-]+))?$',
+                r'^push\s+to\s+github(?:\s+([A-Za-z0-9_/-]+))?$',
+            ],
+            'git_pull': [
+                r'^(?:git\s+)?pull(?:\s+from\s+([A-Za-z0-9_-]+))?(?:\s+([A-Za-z0-9_/-]+))?$',
+            ],
+            'git_log': [
+                r'^(?:git\s+)?log(?:\s+last\s+(\d+))?$',
+                r'^show\s+git\s+log$',
             ],
             'file_read': [
                 r'^(read|view|cat)\s+file\s+(.+)$',
@@ -78,6 +117,19 @@ class Router:
         logger.info(f"[ROUTE] Analyzing: {goal}")
         
         goal_lower = goal.lower().strip()
+        
+        # VS Code open — check FIRST before browser patterns
+        vscode_match = re.match(r'^open\s+(?:file\s+)?(.+?)\s+in\s+vscode$', goal_lower)
+        if vscode_match:
+            filepath = vscode_match.group(1)
+            logger.info(f"[ROUTE] VS Code open command detected")
+            return {
+                'is_command': True,
+                'command_type': 'vscode',
+                'action': 'open',
+                'parameters': {'path': filepath},
+                'confidence': 0.95,
+            }
         
         # Check browser commands FIRST (before file commands)
         # Browser open
@@ -143,7 +195,52 @@ class Router:
                     'confidence': 0.9,
                 }
         
-        # Browser search
+        # LinkedIn post — check before web_search ('post' could match search patterns)
+        for pattern in self.command_patterns['linkedin_post']:
+            # Use original goal (not lowercased) to preserve file path case
+            match = re.match(pattern, goal, re.IGNORECASE)
+            if match:
+                logger.info(f"[ROUTE] LinkedIn post command detected")
+                groups = match.groups()
+                params = {'text': groups[0].strip()}
+                if len(groups) > 1 and groups[1]:
+                    params['image_path'] = groups[1].strip()
+                    logger.info(f"[LINKEDIN] Image path: {params['image_path']}")
+                return {
+                    'is_command': True,
+                    'command_type': 'linkedin',
+                    'action': 'post',
+                    'parameters': params,
+                    'confidence': 0.9,
+                }
+
+        # LinkedIn delete last post
+        for pattern in self.command_patterns['linkedin_delete']:
+            match = re.match(pattern, goal_lower)
+            if match:
+                logger.info(f"[ROUTE] LinkedIn delete post command detected")
+                return {
+                    'is_command': True,
+                    'command_type': 'linkedin',
+                    'action': 'delete',
+                    'parameters': {},
+                    'confidence': 0.95,
+                }
+        
+        # Web search — checked BEFORE browser_search to avoid overlap
+        for pattern in self.command_patterns['web_search']:
+            match = re.match(pattern, goal_lower)
+            if match:
+                logger.info(f"[ROUTE] Web search command detected")
+                return {
+                    'is_command': True,
+                    'command_type': 'search',
+                    'action': 'search',
+                    'parameters': {'query': match.group(2)},
+                    'confidence': 0.9,
+                }
+        
+        # Browser search (explicit "open browser and search" intent)
         for pattern in self.command_patterns['browser_search']:
             match = re.match(pattern, goal_lower)
             if match:
@@ -155,7 +252,86 @@ class Router:
                     'parameters': {'query': match.group(2) or match.group(1)},
                     'confidence': 0.85,
                 }
-        
+
+        # Git commands
+        for pattern in self.command_patterns['git_status']:
+            match = re.match(pattern, goal_lower)
+            if match:
+                logger.info(f"[ROUTE] Git status command detected")
+                return {
+                    'is_command': True,
+                    'command_type': 'git',
+                    'action': 'status',
+                    'parameters': {},
+                    'confidence': 0.95,
+                }
+
+        for pattern in self.command_patterns['git_add']:
+            match = re.match(pattern, goal_lower)
+            if match:
+                logger.info(f"[ROUTE] Git add command detected")
+                return {
+                    'is_command': True,
+                    'command_type': 'git',
+                    'action': 'add',
+                    'parameters': {'path': match.group(1).strip()},
+                    'confidence': 0.95,
+                }
+
+        for pattern in self.command_patterns['git_commit']:
+            match = re.match(pattern, goal_lower)
+            if match:
+                message = match.group(1) or match.group(2)
+                logger.info(f"[ROUTE] Git commit command detected")
+                return {
+                    'is_command': True,
+                    'command_type': 'git',
+                    'action': 'commit',
+                    'parameters': {'message': message.strip() if message else ''},
+                    'confidence': 0.95,
+                }
+
+        for pattern in self.command_patterns['git_push']:
+            match = re.match(pattern, goal_lower)
+            if match:
+                remote = match.group(1) or 'origin'
+                branch = match.group(2)
+                logger.info(f"[ROUTE] Git push command detected")
+                return {
+                    'is_command': True,
+                    'command_type': 'git',
+                    'action': 'push',
+                    'parameters': {'remote': remote.strip(), 'branch': branch.strip() if branch else None},
+                    'confidence': 0.95,
+                }
+
+        for pattern in self.command_patterns['git_pull']:
+            match = re.match(pattern, goal_lower)
+            if match:
+                remote = match.group(1) or 'origin'
+                branch = match.group(2)
+                logger.info(f"[ROUTE] Git pull command detected")
+                return {
+                    'is_command': True,
+                    'command_type': 'git',
+                    'action': 'pull',
+                    'parameters': {'remote': remote.strip(), 'branch': branch.strip() if branch else None},
+                    'confidence': 0.95,
+                }
+
+        for pattern in self.command_patterns['git_log']:
+            match = re.match(pattern, goal_lower)
+            if match:
+                count = match.group(1)
+                logger.info(f"[ROUTE] Git log command detected")
+                return {
+                    'is_command': True,
+                    'command_type': 'git',
+                    'action': 'log',
+                    'parameters': {'count': int(count) if count else 5},
+                    'confidence': 0.95,
+                }
+
         # Check terminal commands
         for pattern in self.command_patterns['terminal']:
             match = re.match(pattern, goal_lower)

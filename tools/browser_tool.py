@@ -254,13 +254,13 @@ class BrowserTool:
         
         try:
             encoded = urllib.parse.quote(prompt)
-            url = f"https://image.pollinations.ai/prompt/{encoded}"
+            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
             
             save_dir = Path("E:/PROJECTS/JARVIS/generated_images")
             save_dir.mkdir(exist_ok=True)
             
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = save_dir / f"image_{timestamp}.jpg"
+            filename = save_dir / f"image_{timestamp}.png"
             
             with httpx.stream("GET", url, follow_redirects=True, timeout=60) as r:
                 with open(filename, "wb") as f:

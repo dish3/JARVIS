@@ -37,6 +37,9 @@ from memory import Memory
 from tools.terminal_tool import TerminalTool
 from tools.file_tool import FileTool
 from tools.browser_tool import BrowserTool
+from tools.search_tool import SearchTool
+from tools.linkedin_tool import LinkedInTool
+from tools.git_tool import GitTool
 
 
 class Orchestrator:
@@ -53,11 +56,17 @@ class Orchestrator:
         self.terminal_tool = TerminalTool()
         self.file_tool = FileTool()
         self.browser_tool = BrowserTool()
+        self.search_tool = SearchTool()
+        self.linkedin_tool = LinkedInTool()
+        self.git_tool = GitTool()
         
         self.tools = {
             'terminal': self.terminal_tool,
             'file': self.file_tool,
             'browser': self.browser_tool,
+            'search': self.search_tool,
+            'linkedin': self.linkedin_tool,
+            'git': self.git_tool,
         }
         
         logger.info("[OK] Orchestrator initialized successfully")
@@ -173,13 +182,13 @@ class Orchestrator:
         """Execute a specific tool"""
         logger.info(f"[TOOL] Executing {tool_type} with params: {parameters}")
         
-        if tool_type not in self.tools:
+        if tool_type not in self.tools and tool_type != 'vscode':
             return {
                 'success': False,
                 'result': f"Unknown tool: {tool_type}"
             }
         
-        tool = self.tools[tool_type]
+        tool = self.tools.get(tool_type)
         
         try:
             if tool_type == 'terminal':
@@ -205,6 +214,46 @@ class Orchestrator:
                     result = tool.generate_image(parameters.get('prompt', ''))
                 else:
                     result = f"Unknown browser action: {action}"
+            elif tool_type == 'git':
+                action = parameters.get('action', '')
+                if action == 'status':
+                    result = tool.status()
+                elif action == 'add':
+                    result = tool.add(parameters.get('path', '.'))
+                elif action == 'commit':
+                    message = parameters.get('message', '')
+                    if not message:
+                        return {'success': False, 'result': 'Error: Git commit requires a commit message.'}
+                    result = tool.commit(message)
+                elif action == 'push':
+                    result = tool.push(parameters.get('remote', 'origin'), parameters.get('branch'))
+                elif action == 'pull':
+                    result = tool.pull(parameters.get('remote', 'origin'), parameters.get('branch'))
+                elif action == 'log':
+                    count = parameters.get('count', 5)
+                    result = tool.log(count)
+                else:
+                    result = f"Unknown git action: {action}"
+            elif tool_type == 'vscode':
+                import subprocess
+                path = parameters.get('path', '')
+                if not path.startswith(('C:', 'D:', 'E:', 'F:')):
+                    path = f"E:\\PROJECTS\\JARVIS\\VirtualAssistant\\{path}"
+                # Use full path to code.cmd in case 'code' is not on PATH
+                code_exe = r"C:\Microsoft VS Code\bin\code.cmd"
+                subprocess.Popen([code_exe, path], shell=True)
+                result = f"Opened in VS Code: {path}"
+            elif tool_type == 'search':
+                result = tool.search(parameters.get('query', ''))
+            elif tool_type == 'linkedin':
+                action = parameters.get('action', '')
+                if action == 'delete':
+                    result = tool.delete_last_post()
+                else:
+                    result = tool.post(
+                        parameters.get('text', ''),
+                        parameters.get('image_path', None)
+                    )
             else:
                 result = "Tool not implemented"
             
