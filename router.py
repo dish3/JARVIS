@@ -33,11 +33,11 @@ class Router:
                 r'^(generate|create|make)\s+(?:a\s+)?picture\s+(?:of\s+)?(.+)$',
                 r'^(generate|create)\s+(?:an?\s+)?photo\s+(?:of\s+)?(.+)$',
                 r'^draw\s+(?:a\s+|an\s+)?(.+)$',
-                r'^(generate|create|make|draw|paint|sketch)\s+(.+)$',
+                r'^(generate|draw|paint|sketch)\s+(.+)$',
             ],
             'browser_search': [
-                r'^(search|google|find)\s+(?:for\s+)?(.+)$',
                 r'^(search\s+)?(?:google|web)\s+(?:for\s+)?(.+)$',
+                r'^(search|google|find)\s+(?:for\s+)?(.+)$',
             ],
             'web_search': [
                 r'^(search|google|look up|find|what is|who is|when is|where is|how to)\s+(.+)$',
@@ -54,6 +54,7 @@ class Router:
                 r'^delete\s+(?:my\s+)?(?:last|latest|recent)\s+linkedin\s+post$',
                 r'^delete\s+linkedin\s+post$',
                 r'^remove\s+(?:my\s+)?(?:last|latest|recent)\s+linkedin\s+post$',
+                r'^remove\s+linkedin\s+post$',
                 r'^linkedin\s+delete\s+(?:last\s+)?post$',
             ],
             'terminal': [
@@ -73,11 +74,11 @@ class Router:
                 r'^(?:git\s+)?commit(?:\s+changes)?(?:\s+to\s+github)?(?:\s+and\s+push)?(?:\s+with\s+message\s+(.+))$' ,
             ],
             'git_push': [
-                r'^(?:git\s+)?push(?:\s+to\s+([A-Za-z0-9_-]+))?(?:\s+([A-Za-z0-9_/-]+))?$',
+                r'^(?:git\s+)?push(?:\s+(?:to\s+)?([A-Za-z0-9_-]+))?(?:\s+([A-Za-z0-9_/-]+))?$',
                 r'^push\s+to\s+github(?:\s+([A-Za-z0-9_/-]+))?$',
             ],
             'git_pull': [
-                r'^(?:git\s+)?pull(?:\s+from\s+([A-Za-z0-9_-]+))?(?:\s+([A-Za-z0-9_/-]+))?$',
+                r'^(?:git\s+)?pull(?:\s+(?:from\s+)?([A-Za-z0-9_-]+))?(?:\s+([A-Za-z0-9_/-]+))?$',
             ],
             'git_log': [
                 r'^(?:git\s+)?log(?:\s+last\s+(\d+))?$',
@@ -94,8 +95,8 @@ class Router:
                 r'^(write|save)\s+(.+?)\s+to\s+(.+)$',
             ],
             'file_list': [
-                r'^(list|ls|dir)\s+(?:files\s+)?(?:in\s+)?(.*)$',
-                r'^(show|display)\s+(?:files|directory)\s+(.*)$',
+                r'^(list|ls|dir)\s+(?:files\b\s*)?(?:in\s+)?(.*)$',
+                r'^(show|display)\s+(?:files|directory)\s+(?:in\s+)?(.*)$',
                 r'^list files.*$',
                 r'^(list|ls|dir)$',
             ],
@@ -227,20 +228,7 @@ class Router:
                     'confidence': 0.95,
                 }
         
-        # Web search — checked BEFORE browser_search to avoid overlap
-        for pattern in self.command_patterns['web_search']:
-            match = re.match(pattern, goal_lower)
-            if match:
-                logger.info(f"[ROUTE] Web search command detected")
-                return {
-                    'is_command': True,
-                    'command_type': 'search',
-                    'action': 'search',
-                    'parameters': {'query': match.group(2)},
-                    'confidence': 0.9,
-                }
-        
-        # Browser search (explicit "open browser and search" intent)
+        # Browser search (explicit "open browser and search" intent) — checked BEFORE web_search to capture direct browser search commands
         for pattern in self.command_patterns['browser_search']:
             match = re.match(pattern, goal_lower)
             if match:
@@ -251,6 +239,19 @@ class Router:
                     'action': 'search',
                     'parameters': {'query': match.group(2) or match.group(1)},
                     'confidence': 0.85,
+                }
+
+        # Web search — checked after browser_search
+        for pattern in self.command_patterns['web_search']:
+            match = re.match(pattern, goal_lower)
+            if match:
+                logger.info(f"[ROUTE] Web search command detected")
+                return {
+                    'is_command': True,
+                    'command_type': 'search',
+                    'action': 'search',
+                    'parameters': {'query': match.group(2)},
+                    'confidence': 0.9,
                 }
 
         # Git commands
@@ -322,7 +323,10 @@ class Router:
         for pattern in self.command_patterns['git_log']:
             match = re.match(pattern, goal_lower)
             if match:
-                count = match.group(1)
+                try:
+                    count = match.group(1)
+                except IndexError:
+                    count = None
                 logger.info(f"[ROUTE] Git log command detected")
                 return {
                     'is_command': True,
