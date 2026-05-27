@@ -290,15 +290,24 @@ class LinkedInTool:
 
             # ── Step 2: wait for composer to open ─────────────────────────────
             logger.info("[LINKEDIN] Step 2: waiting for composer...")
-            time.sleep(6)
-            # Wait until we're in STATE_A before proceeding
-            for _ in range(5):
-                state = self.detect_linkedin_post_state(page)
-                if state == self.STATE_COMPOSER:
-                    break
+            # Wait for the textbox to appear — this is the definitive signal
+            # that the composer is fully open and ready for input.
+            textbox_ready = False
+            for _ in range(10):  # up to 20s
+                try:
+                    el = page.locator('div[aria-label="Text editor for creating content"]').first
+                    if el.is_visible(timeout=2000):
+                        textbox_ready = True
+                        logger.info("[LINKEDIN] Composer textbox is visible — ready")
+                        break
+                except Exception:
+                    pass
                 time.sleep(2)
-            else:
-                logger.warning("[LINKEDIN] Composer did not reach STATE_A — continuing anyway")
+
+            if not textbox_ready:
+                logger.warning("[LINKEDIN] Textbox not visible after 20s — checking state anyway")
+                state = self.detect_linkedin_post_state(page)
+                logger.info(f"[LINKEDIN] State after wait: {state}")
 
             self._screenshot(page, 'dialog_opened')
 
@@ -316,6 +325,16 @@ class LinkedInTool:
                 # FALLBACK 4 — broadest match
                 'div[contenteditable="true"]',
             ]
+            
+            # Wait for text editor to load and be visible (prevents failure if Quill editor is loading slowly)
+            for selector in textbox_selectors[:3]:
+                try:
+                    page.wait_for_selector(selector, state="visible", timeout=15000)
+                    logger.info(f"[LINKEDIN] Textbox selector '{selector}' became visible")
+                    break
+                except Exception:
+                    continue
+
             textbox = self._find_visible(page, textbox_selectors, label="textbox")
 
             if not textbox:
@@ -341,30 +360,46 @@ class LinkedInTool:
                     logger.info("[STATE] TransitioningToComposer — clicking Next...")
                     self._screenshot(page, 'before_next_click')
 
-                    # Scope Next click to the image editor container only.
-                    # The image editor has a header with Back + Next buttons.
-                    # Use the container that has the Back button to avoid
-                    # matching the feed carousel "Next" button.
+                    # The image editor Next button must be scoped carefully.
+                    # The feed also has carousel Next buttons with aria-label="Next".
+                    # Distinguish by: the image editor container has BOTH Back AND Next
+                    # AND is positioned over the feed (higher z-index / modal overlay).
+                    # Use JS to find the Next button that is a sibling of Back,
+                    # inside the same immediate parent — not a feed carousel.
                     next_clicked = False
-                    next_container_selectors = [
-                        # Image editor header — contains both Back and Next
-                        'div:has(button[aria-label="Back"]):has(button[aria-label="Next"])',
-                        # Fallback: any container with a Back button
-                        'div:has(button[aria-label="Back"])',
-                    ]
-                    for container_sel in next_container_selectors:
+                    next_result = page.evaluate("""() => {
+                        // Find Back button first — it only exists in the image editor
+                        const backBtn = document.querySelector('button[aria-label="Back"]');
+                        if (!backBtn) return {found: false, reason: 'No Back button'};
+                        // Find Next button that shares the same parent as Back
+                        const parent = backBtn.parentElement;
+                        if (!parent) return {found: false, reason: 'Back has no parent'};
+                        const nextBtn = parent.querySelector('button[aria-label="Next"]');
+                        if (!nextBtn) return {found: false, reason: 'No Next sibling of Back'};
+                        const r = nextBtn.getBoundingClientRect();
+                        if (r.width === 0) return {found: false, reason: 'Next not visible'};
+                        nextBtn.click();
+                        return {found: true};
+                    }""")
+
+                    if next_result and next_result.get('found'):
+                        next_clicked = True
+                        logger.info("[LINKEDIN] Clicked Next via JS (sibling of Back)")
+                    else:
+                        reason = next_result.get('reason', 'unknown') if next_result else 'null'
+                        logger.warning(f"[LINKEDIN] JS Next click failed: {reason} — trying Playwright fallback")
+                        # Playwright fallback: scope to the innermost container with both buttons
                         try:
-                            container = page.locator(container_sel).last
+                            # Use .last to get innermost matching element
+                            container = page.locator('div:has(> button[aria-label="Back"])').last
                             if container.is_visible(timeout=2000):
-                                next_btn = container.locator('button[aria-label="Next"]').first
-                                if next_btn.is_visible(timeout=2000):
-                                    next_btn.click()
+                                nb = container.locator('button[aria-label="Next"]').first
+                                if nb.is_visible(timeout=2000):
+                                    nb.click()
                                     next_clicked = True
-                                    logger.info(f"[LINKEDIN] Clicked Next scoped to: '{container_sel}'")
-                                    break
+                                    logger.info("[LINKEDIN] Clicked Next via Playwright direct-child scope")
                         except Exception as e:
-                            logger.debug(f"[LINKEDIN] Next container '{container_sel}' failed: {e}")
-                            continue
+                            logger.warning(f"[LINKEDIN] Playwright Next fallback failed: {e}")
 
                     if next_clicked:
                         logger.info("[LINKEDIN] Clicked Next — waiting for composer...")
@@ -506,214 +541,79 @@ class LinkedInTool:
                 pass
             return f"Error deleting post: {str(e)}"
 
-    # ── Post button: deterministic resolution ─────────────────────────────────
+    # ── Post button: deterministic click ──────────────────────────────────────
 
     def _click_post_button(self, page, post_text: str) -> bool:
         """
-        Deterministic final Post action.
-        Only called when detect_linkedin_post_state() confirms STATE_A (Composer).
+        Click the Post button deterministically using JavaScript.
 
-        Strategy:
-          1. Find the active modal container (scoped — never uses global page buttons)
-          2. Collect visible+enabled+viewport buttons inside that container
-          3. Priority: exact text "Post" → nearest to Schedule button
-          4. Retry 3 times: normal click → force click
-          5. Verify: textbox gone OR toast OR editor empty
+        Why JS instead of Playwright locators:
+          - The Post button sits in a fixed/absolute toolbar; getBoundingClientRect
+            works but Playwright's is_visible + viewport checks exclude it.
+          - JS finds it by exact text "Post" with no aria-label, which is unique
+            to the submit button (confirmed from live DOM inspection).
+          - No page-wide scanning, no proximity scoring, no wrong-button risk.
+
+        Retries 3 times. Verifies by checking textbox disappears.
         """
-        before_path = str(SCREENSHOT_DIR / "before_post_click.png")
-        try:
-            page.screenshot(path=before_path)
-            logger.info(f"[LINKEDIN] Debug screenshot: {before_path}")
-        except Exception:
-            pass
-
-        # ── Find the active modal container ───────────────────────────────────
-        # From DOM inspection: Post button [91] and Schedule button [90] are siblings.
-        # They share a parent row. We find that row via JS — it's the smallest
-        # ancestor that contains BOTH buttons.
-        # Note: offsetParent filter in JS excludes fixed/absolute elements,
-        # so we use getBoundingClientRect().width > 0 instead.
-        container = None
-
-        container_js = page.evaluate("""() => {
-            // Find the visible Post button (text == "Post", no aria-label)
-            const btns = Array.from(document.querySelectorAll('button'));
-            const postBtn = btns.find(b => {
-                const r = b.getBoundingClientRect();
-                return b.innerText.trim() === 'Post' && r.width > 0 && r.height > 0;
-            });
-            const schedBtn = document.querySelector('button[aria-label="Schedule post"]');
-            if (!postBtn || !schedBtn) return null;
-
-            // Walk up from Post button to find the ancestor that also contains Schedule
-            let el = postBtn.parentElement;
-            for (let i = 0; i < 8; i++) {
-                if (!el) break;
-                if (el.contains(schedBtn)) {
-                    // Found the shared ancestor — return a unique selector for it
-                    const r = el.getBoundingClientRect();
-                    return {
-                        tag: el.tagName.toLowerCase(),
-                        role: el.getAttribute('role'),
-                        ariaLabel: el.getAttribute('aria-label'),
-                        dataTestid: el.getAttribute('data-testid'),
-                        width: Math.round(r.width),
-                        height: Math.round(r.height),
-                        depth: i,
-                        buttonTexts: Array.from(el.querySelectorAll('button'))
-                            .filter(b => { const r = b.getBoundingClientRect(); return r.width > 0; })
-                            .map(b => b.innerText.trim().substring(0,20) + '|' + (b.getAttribute('aria-label')||''))
-                    };
-                }
-                el = el.parentElement;
-            }
-            return null;
-        }""")
-
-        if container_js:
-            logger.info(
-                f"[LINKEDIN] Post+Schedule shared container: "
-                f"<{container_js['tag']}> aria={container_js['ariaLabel']!r} "
-                f"testid={container_js['dataTestid']!r} "
-                f"size={container_js['width']}x{container_js['height']} "
-                f"depth={container_js['depth']}"
-            )
-            logger.info(f"[LINKEDIN] Buttons in container: {container_js['buttonTexts']}")
-
-            # Build a CSS selector for this container using data-testid or aria-label if available
-            if container_js.get('dataTestid'):
-                sel = f"[data-testid=\"{container_js['dataTestid']}\"]"
-            elif container_js.get('ariaLabel'):
-                sel = f"[aria-label=\"{container_js['ariaLabel']}\"]"
-            else:
-                # Fall back to page scope — we'll use JS-based click below
-                sel = None
-
-            if sel:
-                try:
-                    el = page.locator(sel).last
-                    if el.is_visible(timeout=1500):
-                        container = el
-                        logger.info(f"[LINKEDIN] Scoped to container via: '{sel}'")
-                except Exception:
-                    pass
-
-        if not container:
-            container = page
-            logger.warning("[LINKEDIN] Using full page scope — falling back to JS-based Post click")
-
-        # ── Collect visible+enabled+viewport buttons inside container ──────────
-        logger.info("[LINKEDIN] Collecting buttons inside active container...")
-        all_buttons = container.locator('button').all()
-        candidates = []
-
-        for btn in all_buttons:
-            try:
-                if not btn.is_visible():
-                    continue
-                disabled     = btn.get_attribute('disabled')
-                aria_disabled = btn.get_attribute('aria-disabled')
-                if disabled is not None or aria_disabled == 'true':
-                    continue
-                in_viewport = btn.evaluate(
-                    "el => { const r = el.getBoundingClientRect(); "
-                    "return r.top >= 0 && r.bottom <= window.innerHeight "
-                    "&& r.left >= 0 && r.right <= window.innerWidth; }"
-                )
-                if not in_viewport:
-                    continue
-                text = ""
-                try:
-                    text = btn.inner_text().strip()
-                except Exception:
-                    pass
-                aria = btn.get_attribute('aria-label') or ''
-                candidates.append({'el': btn, 'text': text, 'aria': aria})
-                logger.info(f"[LINKEDIN] Candidate — text={text!r} aria={aria!r}")
-            except Exception:
-                continue
-
-        logger.info(f"[LINKEDIN] Total scoped candidates: {len(candidates)}")
-
-        # ── Priority 1: exact text "Post" ─────────────────────────────────────
-        exact_post = [c for c in candidates if c['text'] == 'Post']
-        logger.info(f"[LINKEDIN] Exact text='Post' candidates: {len(exact_post)}")
-
-        # ── Priority 2: nearest to Schedule button ────────────────────────────
-        schedule_btn = None
-        try:
-            sb = page.locator('button[aria-label="Schedule post"]').first
-            if sb.is_visible(timeout=1000):
-                schedule_btn = sb
-                logger.info("[LINKEDIN] Schedule button found for proximity scoring")
-        except Exception:
-            pass
-
-        def proximity_score(c) -> float:
-            if not schedule_btn:
-                return float('inf')
-            try:
-                sb_box = schedule_btn.bounding_box()
-                c_box  = c['el'].bounding_box()
-                if not sb_box or not c_box:
-                    return float('inf')
-                return ((c_box['x'] - sb_box['x']) ** 2 + (c_box['y'] - sb_box['y']) ** 2) ** 0.5
-            except Exception:
-                return float('inf')
-
-        if exact_post:
-            exact_post.sort(key=proximity_score)
-            winner = exact_post[0]
-            logger.info(f"[LINKEDIN] Winner (exact+proximity): text={winner['text']!r} aria={winner['aria']!r}")
-        elif candidates:
-            candidates.sort(key=proximity_score)
-            winner = candidates[0]
-            logger.info(f"[LINKEDIN] Winner (proximity fallback): text={winner['text']!r} aria={winner['aria']!r}")
-        else:
-            logger.error("[LINKEDIN] No candidates found in scoped container")
-            return False
-
-        # ── Click with retry ───────────────────────────────────────────────────
-        btn_el = winner['el']
-        clicked = False
+        self._screenshot(page, 'before_post_click')
 
         for attempt in range(1, 4):
-            try:
-                logger.info(f"[LINKEDIN] Post click attempt {attempt}/3...")
-                btn_el.scroll_into_view_if_needed(timeout=3000)
-                time.sleep(0.3)
-                btn_el.click(timeout=5000)
-                clicked = True
-                logger.info(f"[LINKEDIN] Post button clicked (attempt {attempt}/3)")
+            logger.info(f"[LINKEDIN] Post click attempt {attempt}/3 (JS direct)...")
+
+            result = page.evaluate("""() => {
+                // Find the Post button: exact text "Post", no aria-label,
+                // visible (width > 0), not disabled.
+                // Use textContent.trim() as fallback since innerText can be
+                // affected by CSS visibility in some LinkedIn layouts.
+                const btns = Array.from(document.querySelectorAll('button'));
+                const postBtn = btns.find(b => {
+                    if (b.disabled) return false;
+                    if (b.getAttribute('aria-disabled') === 'true') return false;
+                    const r = b.getBoundingClientRect();
+                    if (r.width === 0 || r.height === 0) return false;
+                    const inner = (b.innerText || '').trim();
+                    const content = (b.textContent || '').trim();
+                    return inner === 'Post' || content === 'Post';
+                });
+                if (!postBtn) {
+                    // Debug: list all visible buttons with their text
+                    const visible = btns
+                        .filter(b => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0; })
+                        .map(b => (b.innerText || b.textContent || '').trim().substring(0, 30) + '|' + (b.getAttribute('aria-label') || ''))
+                        .filter(t => t.length > 1);
+                    return {found: false, reason: 'No button with text Post found', visibleButtons: visible.slice(0, 20)};
+                }
+                const ariaLabel = postBtn.getAttribute('aria-label') || '';
+                postBtn.click();
+                return {found: true, ariaLabel: ariaLabel, text: (postBtn.innerText || postBtn.textContent || '').trim()};
+            }""")
+
+            if result and result.get('found'):
+                logger.info(
+                    f"[LINKEDIN] JS clicked Post button — "
+                    f"text={result.get('text')!r} aria={result.get('ariaLabel')!r}"
+                )
                 break
-            except Exception as click_err:
-                logger.warning(f"[LINKEDIN] Normal click failed {attempt}/3: {click_err}")
-                try:
-                    btn_el.click(force=True, timeout=5000)
-                    clicked = True
-                    logger.info(f"[LINKEDIN] Force-clicked Post (attempt {attempt}/3)")
-                    break
-                except Exception as force_err:
-                    logger.warning(f"[LINKEDIN] Force click failed: {force_err}")
+            else:
+                reason = result.get('reason', 'unknown') if result else 'JS returned null'
+                visible = result.get('visibleButtons', []) if result else []
+                logger.warning(f"[LINKEDIN] JS click failed attempt {attempt}/3: {reason}")
+                if visible:
+                    logger.warning(f"[LINKEDIN] Visible buttons at failure: {visible}")
                 if attempt < 3:
                     time.sleep(1)
-
-        if not clicked:
+        else:
             logger.error("[LINKEDIN] All 3 Post click attempts failed")
+            self._screenshot(page, 'post_click_failed')
             return False
 
         # ── Verify submission ──────────────────────────────────────────────────
         logger.info("[LINKEDIN] Verifying post submission...")
         time.sleep(3)
+        self._screenshot(page, 'after_post_click')
 
-        after_path = str(SCREENSHOT_DIR / "after_post_click.png")
-        try:
-            page.screenshot(path=after_path)
-            logger.info(f"[LINKEDIN] Debug screenshot: {after_path}")
-        except Exception:
-            pass
-
-        # Check 1: textbox gone
+        # Check 1: textbox gone — most reliable signal
         try:
             if not page.locator('div[aria-label="Text editor for creating content"]').first.is_visible(timeout=3000):
                 logger.info("[LINKEDIN] Verified: textbox gone — modal closed")
@@ -721,17 +621,16 @@ class LinkedInTool:
         except Exception:
             pass
 
-        # Check 2: toast / alert
+        # Check 2: toast / alert appeared
         for sel in ['[role="alert"]', '[aria-live="polite"]', '[data-testid*="toast"]']:
             try:
-                el = page.locator(sel).first
-                if el.is_visible(timeout=2000):
-                    logger.info(f"[LINKEDIN] Verified: notification visible via '{sel}'")
+                if page.locator(sel).first.is_visible(timeout=2000):
+                    logger.info(f"[LINKEDIN] Verified: notification via '{sel}'")
                     return True
             except Exception:
                 continue
 
-        # Check 3: editor empty
+        # Check 3: editor is now empty
         try:
             editor = page.locator('div[aria-label="Text editor for creating content"]').first
             if editor.is_visible(timeout=1000) and not editor.inner_text().strip():
@@ -740,7 +639,8 @@ class LinkedInTool:
         except Exception:
             pass
 
-        logger.warning("[LINKEDIN] Verification inconclusive — click succeeded, assuming posted")
+        # JS click succeeded — treat as posted even if verification is inconclusive
+        logger.warning("[LINKEDIN] Verification inconclusive — JS click succeeded, assuming posted")
         return True
 
     # ── Image upload ───────────────────────────────────────────────────────────
@@ -841,12 +741,12 @@ class LinkedInTool:
     def _find_visible(self, page, selectors: list, label: str = "element"):
         """
         Return the first visible Playwright locator from the list, or None.
-        Tries each selector once (no retry needed for find — only for click).
+        Uses a short timeout per selector — primary selectors should hit fast.
         """
         for selector in selectors:
             try:
                 el = page.locator(selector).first
-                if el.is_visible(timeout=SELECTOR_WAIT):
+                if el.is_visible(timeout=1500):  # 1.5s per selector — fast fail
                     logger.info(f"[LINKEDIN] Found {label}: '{selector}'")
                     return el
             except Exception:

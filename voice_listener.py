@@ -236,6 +236,7 @@ def listen_ptt(hotkey: str = "F9") -> Optional[str]:
     try:
         # Wait for key press
         keyboard.wait(hotkey)
+        logger.info(f"[VOICE] Mic start — device={_mic_device} hotkey={hotkey}")
         print("[JARVIS] Listening...")
         frames.clear()
         
@@ -272,9 +273,12 @@ def listen_ptt(hotkey: str = "F9") -> Optional[str]:
         try:
             result = listener.transcribe_audio(temp_path)
             if result:
+                result = result.strip()
+                logger.info(f"[TRANSCRIPTION] {result}")
                 print(f"[JARVIS] Heard: {result}")
                 return result
             else:
+                logger.warning("[TRANSCRIPTION] Empty result from Whisper")
                 print("[JARVIS] Could not understand. Try again.")
                 return None
         finally:
