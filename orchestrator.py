@@ -137,7 +137,11 @@ class Orchestrator:
                 response['success'] = tool_result['success']
                 response['result'] = tool_result['result']
                 response['logs'].append(f"[COMMAND EXECUTED] {route_result['command_type']}")
-                
+
+                # Persist this interaction to memory (router path)
+                self.memory.store_interaction(goal, response['result'])
+                response['memory_updated'] = True
+
                 return response
             
             # Step 2: If not a pure command, use planner (Ollama)

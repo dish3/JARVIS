@@ -13,7 +13,10 @@ from typing import Dict, Any, Optional
 logger = logging.getLogger('PLANNER')
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_HEALTH_URL = "http://localhost:11434/api/tags"
 MODEL = "phi3.5"
+INFERENCE_TIMEOUT = 20   # seconds per attempt
+HEALTH_TIMEOUT = 3       # seconds for health check
 
 
 class Planner:
@@ -26,15 +29,28 @@ class Planner:
         self._check_ollama()
         logger.info("[OK] Planner initialized")
     
-    def _check_ollama(self):
-        """Check if Ollama is running"""
+    def _check_ollama(self) -> bool:
+        """Check if Ollama is running at startup (non-blocking, 3s timeout)."""
         try:
-            response = requests.get("http://localhost:11434/api/tags", timeout=2)
+            response = requests.get(OLLAMA_HEALTH_URL, timeout=HEALTH_TIMEOUT)
             if response.status_code == 200:
                 logger.info("[OK] Ollama is running")
                 return True
-        except:
-            logger.warning("[WARN] Ollama not running. Start with: ollama run phi3.5")
+        except Exception:
+            pass
+        logger.warning("[WARN] Ollama not running. Start with: ollama run phi3.5")
+        return False
+
+    def _is_ollama_available(self) -> bool:
+        """
+        Pre-inference health check — called before every plan() attempt.
+        Fast 3s timeout so the UI is never blocked waiting for a dead server.
+        Returns True if Ollama responds, False otherwise.
+        """
+        try:
+            r = requests.get(OLLAMA_HEALTH_URL, timeout=HEALTH_TIMEOUT)
+            return r.status_code == 200
+        except Exception:
             return False
     
     def plan(self, goal: str, context: Optional[Dict] = None) -> Dict[str, Any]:
@@ -55,43 +71,55 @@ class Planner:
             }
         """
         logger.info(f"[PLANNER] Planning: {goal}")
-        
+
+        # Pre-inference health check — fast fail instead of 120s hang
+        if not self._is_ollama_available():
+            logger.warning("[OLLAMA] Health check failed — Ollama is not reachable")
+            return self._unavailable_response(goal)
+
         # Build prompt
         prompt = self._build_prompt(goal, context)
-        
-        try:
-            # Call Ollama
-            logger.info(f"[OLLAMA] Calling {self.model}...")
-            response = requests.post(
-                self.url,
-                json={
-                    "model": self.model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "temperature": 0.3,  # Low temperature for consistency
-                },
-                timeout=120
-            )
-            
-            if response.status_code != 200:
-                logger.error(f"[OLLAMA] Error: {response.status_code}")
-                return self._default_response(goal)
-            
-            result = response.json()
-            response_text = result.get('response', '')
-            
-            logger.info(f"[OLLAMA] Response received ({len(response_text)} chars)")
-            
-            # Parse response
-            plan = self._parse_response(response_text, goal)
-            return plan
-            
-        except requests.exceptions.Timeout:
-            logger.error("[OLLAMA] Timeout - Ollama not responding")
-            return self._default_response(goal)
-        except Exception as e:
-            logger.error(f"[OLLAMA] Error: {str(e)}")
-            return self._default_response(goal)
+
+        # Try inference up to 2 times (original attempt + one retry)
+        for attempt in range(1, 3):
+            try:
+                logger.info(f"[OLLAMA] Calling {self.model} (attempt {attempt})...")
+                response = requests.post(
+                    self.url,
+                    json={
+                        "model": self.model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "temperature": 0.3,
+                    },
+                    timeout=INFERENCE_TIMEOUT
+                )
+
+                if response.status_code != 200:
+                    logger.error(f"[OLLAMA] HTTP {response.status_code} on attempt {attempt}")
+                    if attempt == 2:
+                        return self._default_response(goal)
+                    continue
+
+                result = response.json()
+                response_text = result.get('response', '')
+                logger.info(f"[OLLAMA] Response received ({len(response_text)} chars)")
+                return self._parse_response(response_text, goal)
+
+            except requests.exceptions.Timeout:
+                logger.warning(f"[OLLAMA] Timeout after {INFERENCE_TIMEOUT}s (attempt {attempt})")
+                if attempt == 2:
+                    return self._default_response(goal)
+                # Brief pause before retry
+                import time
+                time.sleep(1)
+
+            except Exception as e:
+                logger.error(f"[OLLAMA] Error on attempt {attempt}: {e}")
+                if attempt == 2:
+                    return self._default_response(goal)
+
+        return self._default_response(goal)
     
     def _build_prompt(self, goal: str, context: Optional[Dict] = None) -> str:
         """Build prompt for Ollama"""
@@ -205,7 +233,7 @@ Be concise and direct."""
         return plan_result
     
     def _default_response(self, goal: str) -> Dict[str, Any]:
-        """Default response when Ollama fails"""
+        """Default response when Ollama times out or returns an error."""
         logger.warning("[PLANNER] Using default response")
         return {
             'requires_tool': False,
@@ -214,6 +242,22 @@ Be concise and direct."""
             'parameters': {},
             'response': f"I understood your goal: {goal}. Please ensure Ollama is running.",
             'reasoning': "Ollama not available",
+        }
+
+    def _unavailable_response(self, goal: str) -> Dict[str, Any]:
+        """User-friendly response when Ollama is not reachable at all."""
+        logger.warning("[PLANNER] Ollama unreachable — returning user-friendly error")
+        return {
+            'requires_tool': False,
+            'tool_type': None,
+            'action': None,
+            'parameters': {},
+            'response': (
+                "Ollama is not running. "
+                "Start it with: ollama run phi3.5 — "
+                "then try again."
+            ),
+            'reasoning': "Ollama health check failed",
         }
 
 

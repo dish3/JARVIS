@@ -141,6 +141,75 @@ def _get_voice_listener():
     return _voice_listener
 
 
+def _select_mic_device() -> int | None:
+    """
+    Enumerate available input devices and return the best one to use.
+
+    Priority order:
+      1. Default system input device (sounddevice.default.device[0])
+      2. First device whose name contains 'microphone' or 'mic' (case-insensitive)
+      3. First device with at least 1 input channel
+      4. None  → sounddevice will use its own default (same as not passing device=)
+
+    Logs every candidate and the final selection with [MIC DEVICE] tag.
+    Never raises — all errors return None so recording still proceeds.
+    """
+    try:
+        import sounddevice as sd
+
+        devices = sd.query_devices()
+        default_input_idx = sd.default.device[0]  # may be -1 if unset
+
+        logger.info("[MIC DEVICE] Available input devices:")
+        input_devices = []
+        for idx, dev in enumerate(devices):
+            if dev['max_input_channels'] > 0:
+                marker = ' <-- default' if idx == default_input_idx else ''
+                logger.info(
+                    f"[MIC DEVICE]   [{idx}] {dev['name']} "
+                    f"(channels={dev['max_input_channels']}){marker}"
+                )
+                input_devices.append((idx, dev))
+
+        if not input_devices:
+            logger.warning("[MIC DEVICE] No input devices found — using sounddevice default")
+            return None
+
+        # 1. Use system default if it is a valid input device
+        if default_input_idx >= 0:
+            default_dev = devices[default_input_idx]
+            if default_dev['max_input_channels'] > 0:
+                logger.info(
+                    f"[MIC DEVICE] Selected default system mic: "
+                    f"[{default_input_idx}] {default_dev['name']}"
+                )
+                return default_input_idx
+
+        # 2. Prefer a device whose name contains 'microphone' or 'mic'
+        for idx, dev in input_devices:
+            name_lower = dev['name'].lower()
+            if 'microphone' in name_lower or 'mic' in name_lower:
+                logger.info(
+                    f"[MIC DEVICE] Selected by name match: [{idx}] {dev['name']}"
+                )
+                return idx
+
+        # 3. Fall back to first available input device
+        idx, dev = input_devices[0]
+        logger.info(
+            f"[MIC DEVICE] Fallback to first input device: [{idx}] {dev['name']}"
+        )
+        return idx
+
+    except Exception as e:
+        logger.warning(f"[MIC DEVICE] Device enumeration failed: {e} — using sounddevice default")
+        return None
+
+
+# Resolve mic device once at import time so every listen_ptt() call uses the same device
+_mic_device = _select_mic_device()
+
+
 def listen_ptt(hotkey: str = "F9") -> Optional[str]:
     """Push-to-talk: hold hotkey to record, release to transcribe.
     Uses module-level VoiceListener to avoid reloading model.
@@ -170,11 +239,11 @@ def listen_ptt(hotkey: str = "F9") -> Optional[str]:
         print("[JARVIS] Listening...")
         frames.clear()
         
-        # Record while key is held
+        # Record while key is held — use dynamically selected mic device
         with sd.InputStream(samplerate=SAMPLE_RATE,
                            channels=1,
                            dtype='float32',
-                           device=1,
+                           device=_mic_device,
                            callback=audio_callback,
                            blocksize=4096):
             while keyboard.is_pressed(hotkey):
