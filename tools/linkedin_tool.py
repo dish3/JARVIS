@@ -360,46 +360,26 @@ class LinkedInTool:
                     logger.info("[STATE] TransitioningToComposer — clicking Next...")
                     self._screenshot(page, 'before_next_click')
 
-                    # The image editor Next button must be scoped carefully.
-                    # The feed also has carousel Next buttons with aria-label="Next".
-                    # Distinguish by: the image editor container has BOTH Back AND Next
-                    # AND is positioned over the feed (higher z-index / modal overlay).
-                    # Use JS to find the Next button that is a sibling of Back,
-                    # inside the same immediate parent — not a feed carousel.
                     next_clicked = False
-                    next_result = page.evaluate("""() => {
-                        // Find Back button first — it only exists in the image editor
-                        const backBtn = document.querySelector('button[aria-label="Back"]');
-                        if (!backBtn) return {found: false, reason: 'No Back button'};
-                        // Find Next button that shares the same parent as Back
-                        const parent = backBtn.parentElement;
-                        if (!parent) return {found: false, reason: 'Back has no parent'};
-                        const nextBtn = parent.querySelector('button[aria-label="Next"]');
-                        if (!nextBtn) return {found: false, reason: 'No Next sibling of Back'};
-                        const r = nextBtn.getBoundingClientRect();
-                        if (r.width === 0) return {found: false, reason: 'Next not visible'};
-                        nextBtn.click();
-                        return {found: true};
-                    }""")
-
-                    if next_result and next_result.get('found'):
-                        next_clicked = True
-                        logger.info("[LINKEDIN] Clicked Next via JS (sibling of Back)")
-                    else:
-                        reason = next_result.get('reason', 'unknown') if next_result else 'null'
-                        logger.warning(f"[LINKEDIN] JS Next click failed: {reason} — trying Playwright fallback")
-                        # Playwright fallback: scope to the innermost container with both buttons
-                        try:
-                            # Use .last to get innermost matching element
-                            container = page.locator('div:has(> button[aria-label="Back"])').last
-                            if container.is_visible(timeout=2000):
-                                nb = container.locator('button[aria-label="Next"]').first
-                                if nb.is_visible(timeout=2000):
-                                    nb.click()
-                                    next_clicked = True
-                                    logger.info("[LINKEDIN] Clicked Next via Playwright direct-child scope")
-                        except Exception as e:
-                            logger.warning(f"[LINKEDIN] Playwright Next fallback failed: {e}")
+                    try:
+                        back_btn = page.locator('button[aria-label="Back"]').first
+                        if back_btn.is_visible(timeout=3000):
+                            # The image editor has TWO Next buttons on the page:
+                            #   [0] data-testid="carousel-inline-right-button" — feed carousel (wrong)
+                            #   [1] class contains "share-box-footer__primary-btn" — image editor (correct)
+                            # Select by the stable semantic class, not aria-label alone.
+                            next_btn = page.locator('button[aria-label="Next"].artdeco-button').last
+                            if not next_btn.is_visible(timeout=2000):
+                                # Fallback: second Next button (index 1)
+                                next_btn = page.locator('button[aria-label="Next"]').nth(1)
+                            if next_btn.is_visible(timeout=3000):
+                                next_btn.click(force=True, timeout=5000)
+                                next_clicked = True
+                                logger.info("[LINKEDIN] Clicked image editor Next (share-box-footer)")
+                        else:
+                            logger.warning("[LINKEDIN] Back button not visible — not in image editor")
+                    except Exception as e:
+                        logger.warning(f"[LINKEDIN] Next click error: {e}")
 
                     if next_clicked:
                         logger.info("[LINKEDIN] Clicked Next — waiting for composer...")
@@ -541,68 +521,39 @@ class LinkedInTool:
                 pass
             return f"Error deleting post: {str(e)}"
 
-    # ── Post button: deterministic click ──────────────────────────────────────
+    # ── Post button: Playwright-native click ──────────────────────────────────
 
     def _click_post_button(self, page, post_text: str) -> bool:
         """
-        Click the Post button deterministically using JavaScript.
+        Click the Post button using Playwright's get_by_role — which pierces
+        shadow DOM automatically, unlike document.querySelectorAll in JS.
 
-        Why JS instead of Playwright locators:
-          - The Post button sits in a fixed/absolute toolbar; getBoundingClientRect
-            works but Playwright's is_visible + viewport checks exclude it.
-          - JS finds it by exact text "Post" with no aria-label, which is unique
-            to the submit button (confirmed from live DOM inspection).
-          - No page-wide scanning, no proximity scoring, no wrong-button risk.
+        The Post button has accessible name "Post" (exact). This is confirmed
+        by state detection which uses the same get_by_role call successfully.
 
-        Retries 3 times. Verifies by checking textbox disappears.
+        Retries 3 times with 1s between attempts.
+        Verifies by checking textbox disappears after click.
         """
         self._screenshot(page, 'before_post_click')
 
         for attempt in range(1, 4):
-            logger.info(f"[LINKEDIN] Post click attempt {attempt}/3 (JS direct)...")
-
-            result = page.evaluate("""() => {
-                // Find the Post button: exact text "Post", no aria-label,
-                // visible (width > 0), not disabled.
-                // Use textContent.trim() as fallback since innerText can be
-                // affected by CSS visibility in some LinkedIn layouts.
-                const btns = Array.from(document.querySelectorAll('button'));
-                const postBtn = btns.find(b => {
-                    if (b.disabled) return false;
-                    if (b.getAttribute('aria-disabled') === 'true') return false;
-                    const r = b.getBoundingClientRect();
-                    if (r.width === 0 || r.height === 0) return false;
-                    const inner = (b.innerText || '').trim();
-                    const content = (b.textContent || '').trim();
-                    return inner === 'Post' || content === 'Post';
-                });
-                if (!postBtn) {
-                    // Debug: list all visible buttons with their text
-                    const visible = btns
-                        .filter(b => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0; })
-                        .map(b => (b.innerText || b.textContent || '').trim().substring(0, 30) + '|' + (b.getAttribute('aria-label') || ''))
-                        .filter(t => t.length > 1);
-                    return {found: false, reason: 'No button with text Post found', visibleButtons: visible.slice(0, 20)};
-                }
-                const ariaLabel = postBtn.getAttribute('aria-label') || '';
-                postBtn.click();
-                return {found: true, ariaLabel: ariaLabel, text: (postBtn.innerText || postBtn.textContent || '').trim()};
-            }""")
-
-            if result and result.get('found'):
-                logger.info(
-                    f"[LINKEDIN] JS clicked Post button — "
-                    f"text={result.get('text')!r} aria={result.get('ariaLabel')!r}"
-                )
-                break
-            else:
-                reason = result.get('reason', 'unknown') if result else 'JS returned null'
-                visible = result.get('visibleButtons', []) if result else []
-                logger.warning(f"[LINKEDIN] JS click failed attempt {attempt}/3: {reason}")
-                if visible:
-                    logger.warning(f"[LINKEDIN] Visible buttons at failure: {visible}")
-                if attempt < 3:
-                    time.sleep(1)
+            logger.info(f"[LINKEDIN] Post click attempt {attempt}/3...")
+            try:
+                # get_by_role pierces shadow DOM — same method used in state detection
+                btn = page.get_by_role('button', name='Post', exact=True).last
+                if btn.is_visible(timeout=3000):
+                    btn.scroll_into_view_if_needed(timeout=3000)
+                    # force=True bypasses the interop-shadowdom overlay
+                    # that intercepts pointer events on LinkedIn
+                    btn.click(force=True, timeout=5000)
+                    logger.info(f"[LINKEDIN] Post button clicked via get_by_role (attempt {attempt}/3)")
+                    break
+                else:
+                    logger.warning(f"[LINKEDIN] Post button not visible (attempt {attempt}/3)")
+            except Exception as e:
+                logger.warning(f"[LINKEDIN] Post click failed attempt {attempt}/3: {e}")
+            if attempt < 3:
+                time.sleep(1)
         else:
             logger.error("[LINKEDIN] All 3 Post click attempts failed")
             self._screenshot(page, 'post_click_failed')
@@ -639,8 +590,7 @@ class LinkedInTool:
         except Exception:
             pass
 
-        # JS click succeeded — treat as posted even if verification is inconclusive
-        logger.warning("[LINKEDIN] Verification inconclusive — JS click succeeded, assuming posted")
+        logger.warning("[LINKEDIN] Verification inconclusive — click succeeded, assuming posted")
         return True
 
     # ── Image upload ───────────────────────────────────────────────────────────
