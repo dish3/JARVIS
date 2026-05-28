@@ -244,7 +244,8 @@ class Orchestrator:
                 if not path.startswith(('C:', 'D:', 'E:', 'F:')):
                     path = f"E:\\PROJECTS\\JARVIS\\VirtualAssistant\\{path}"
                 # Use full path to code.cmd in case 'code' is not on PATH
-                code_exe = r"C:\Microsoft VS Code\bin\code.cmd"
+                import shutil
+                code_exe = shutil.which('code') or r"C:\Microsoft VS Code\bin\code.cmd"
                 subprocess.Popen([code_exe, path], shell=True)
                 result = f"Opened in VS Code: {path}"
             elif tool_type == 'search':

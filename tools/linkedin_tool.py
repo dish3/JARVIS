@@ -176,6 +176,7 @@ class LinkedInTool:
     # State constants — used by detect_linkedin_post_state()
     STATE_COMPOSER      = 'STATE_A'   # Main composer: Post + Add media + Schedule post visible
     STATE_IMAGE_PREVIEW = 'STATE_B'   # Image editor: Next + Back + Edit + Tag visible
+    STATE_ALT_TEXT      = 'STATE_C'   # Alt-text/caption editor: Next visible, Back NOT visible, Post NOT visible
     STATE_UNKNOWN       = 'STATE_UNKNOWN'
 
     def detect_linkedin_post_state(self, page) -> str:
@@ -209,6 +210,10 @@ class LinkedInTool:
             if next_visible and back_visible:
                 logger.info("[STATE] ImagePreview — Next+Back buttons visible")
                 return self.STATE_IMAGE_PREVIEW
+
+            if next_visible and not back_visible:
+                logger.info("[STATE] AltText — Next visible, Back NOT visible")
+                return self.STATE_ALT_TEXT
 
             # Check STATE_A
             post_visible     = False
@@ -382,17 +387,38 @@ class LinkedInTool:
                         logger.warning(f"[LINKEDIN] Next click error: {e}")
 
                     if next_clicked:
-                        logger.info("[LINKEDIN] Clicked Next — waiting for composer...")
+                        logger.info("[LINKEDIN] Clicked Next — waiting for next state...")
                         time.sleep(4)
                         self._screenshot(page, 'after_next_click')
 
-                        # Verify we're back in STATE_A
-                        for attempt in range(6):
+                        # Handle possible STATE_C (alt-text screen) between STATE_B and STATE_A
+                        for attempt in range(8):
                             state = self.detect_linkedin_post_state(page)
                             if state == self.STATE_COMPOSER:
                                 logger.info("[STATE] Composer — ready to post")
                                 break
-                            logger.info(f"[STATE] Still {state} after Next (attempt {attempt+1}/6)...")
+                            if state == self.STATE_ALT_TEXT:
+                                logger.info("[STATE] AltText screen — clicking Next to proceed...")
+                                alt_next = page.evaluate("""() => {
+                                    const btns = Array.from(document.querySelectorAll('button'));
+                                    const nextBtn = btns.find(b => {
+                                        if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+                                        const r = b.getBoundingClientRect();
+                                        if (r.width === 0 || r.height === 0) return false;
+                                        return (b.getAttribute('aria-label') || '') === 'Next';
+                                    });
+                                    if (!nextBtn) return {found: false};
+                                    nextBtn.click();
+                                    return {found: true};
+                                }""")
+                                if alt_next and alt_next.get('found'):
+                                    logger.info("[STATE] Clicked Next on alt-text screen")
+                                else:
+                                    logger.warning("[STATE] Could not click Next on alt-text screen")
+                                time.sleep(3)
+                                self._screenshot(page, f'after_alttext_next_{attempt}')
+                                continue
+                            logger.info(f"[STATE] State={state} after Next (attempt {attempt+1}/8)...")
                             time.sleep(2)
                         else:
                             logger.warning("[STATE] Did not reach Composer after Next — proceeding anyway")
