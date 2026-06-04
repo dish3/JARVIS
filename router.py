@@ -37,7 +37,7 @@ class Router:
             ],
             'browser_search': [
                 r'^(search\s+)?(?:google|web)\s+(?:for\s+)?(.+)$',
-                r'^(search|google|find)\s+(?:for\s+)?(.+)$',
+                r'^(google)\s+(?:for\s+)?(.+)$',
             ],
             'web_search': [
                 r'^(search|google|look up|find|what is|who is|when is|where is|how to)\s+(.+)$',
@@ -86,9 +86,8 @@ class Router:
             ],
             'file_read': [
                 r'^(read|view|cat)\s+file\s+(.+)$',
-                r'^(read|view|cat)\s+(?!file)(.+)$',
+                r'^(read|view|cat)\s+(?!file|code\s)(.+)$',
                 r'^(show|display)\s+file\s+(.+)$',
-                r'^read\s+(.+)$',
             ],
             'file_write': [
                 r'^(create|write|save)\s+(?:file\s+)?(.+?)\s+(?:with\s+)?(?:content\s+)?(.+)$',
@@ -99,6 +98,27 @@ class Router:
                 r'^(show|display)\s+(?:files|directory)\s+(?:in\s+)?(.*)$',
                 r'^list files.*$',
                 r'^(list|ls|dir)$',
+            ],
+            'code': [
+                r'^(read|view|show)\s+code\s+(?:from\s+)?(.+)$',
+                r'^(edit|patch|modify)\s+(.+?)\s+find\s+(.+?)\s+replace\s+(.+)$',
+                r'^(run|execute)\s+(?:script\s+)?(.+\.py)$',
+                r'^(create|make)\s+(?:python\s+)?(?:file\s+)?(.+\.py)\s+(?:with\s+)?(?:content\s+)?(.+)$',
+                r'^open\s+(.+?)\s+in\s+(?:vs\s*code|vscode|code)$',
+            ],
+            'automation': [
+                r'^(?:click|tap)\s+(?:at\s+)?(\d+)\s+(\d+)$',
+                r'^(?:double\s+click)\s+(?:at\s+)?(\d+)\s+(\d+)$',
+                r'^(?:right\s+click)\s+(?:at\s+)?(\d+)\s+(\d+)$',
+                r'^type\s+(?:text\s+)?["\']?(.+?)["\']?$',
+                r'^(?:take\s+(?:a\s+)?)?screenshot(?:\s+(?:as\s+)?(.+))?$',
+                r'^press\s+(?:key\s+)?(.+)$',
+                r'^hotkey\s+(.+)$',
+                r'^scroll\s+(up|down)(?:\s+(\d+))?$',
+                r'^(?:move\s+mouse\s+(?:to\s+)?)(\d+)\s+(\d+)$',
+                r'^(?:get\s+)?mouse\s+position$',
+                r'^(?:get\s+)?screen\s+size$',
+                r'^drag\s+(?:from\s+)?(\d+)\s+(\d+)\s+(?:to\s+)?(\d+)\s+(\d+)$',
             ],
         }
     
@@ -116,21 +136,31 @@ class Router:
             }
         """
         logger.info(f"[ROUTE] Analyzing: {goal}")
-        
+        logger.info(f"[ROUTER INPUT] {goal!r}")
+
         goal_lower = goal.lower().strip()
+
+        def _match(result: dict) -> dict:
+            """Log a successful match and return the result unchanged."""
+            if result.get('is_command'):
+                logger.info(
+                    f"[ROUTER MATCH] {result['command_type']}/{result['action']} "
+                    f"← {goal!r}"
+                )
+            return result
         
         # VS Code open — check FIRST before browser patterns
-        vscode_match = re.match(r'^open\s+(?:file\s+)?(.+?)\s+in\s+vscode$', goal_lower)
+        vscode_match = re.match(r'^open\s+(?:file\s+)?(.+?)\s+in\s+(?:vs\s*code|vscode|code)$', goal_lower)
         if vscode_match:
             filepath = vscode_match.group(1)
             logger.info(f"[ROUTE] VS Code open command detected")
-            return {
+            return _match({
                 'is_command': True,
-                'command_type': 'vscode',
-                'action': 'open',
+                'command_type': 'code',
+                'action': 'open_vscode',
                 'parameters': {'path': filepath},
                 'confidence': 0.95,
-            }
+            })
         
         # Check browser commands FIRST (before file commands)
         # Browser open
@@ -392,8 +422,167 @@ class Router:
                     'confidence': 0.9,
                 }
         
+        # Code tool commands
+        for pattern in self.command_patterns['code']:
+            match = re.match(pattern, goal_lower)
+            if match:
+                logger.info(f"[ROUTE] Code command detected")
+                groups = match.groups()
+                # Determine action from the verb
+                verb = groups[0] if groups else ''
+                if verb in ('read', 'view', 'show'):
+                    return _match({
+                        'is_command': True,
+                        'command_type': 'code',
+                        'action': 'read',
+                        'parameters': {'path': groups[1]},
+                        'confidence': 0.9,
+                    })
+                elif verb in ('edit', 'patch', 'modify'):
+                    return _match({
+                        'is_command': True,
+                        'command_type': 'code',
+                        'action': 'patch',
+                        'parameters': {'path': groups[1], 'find': groups[2], 'replace': groups[3]},
+                        'confidence': 0.9,
+                    })
+                elif verb in ('run', 'execute'):
+                    return _match({
+                        'is_command': True,
+                        'command_type': 'code',
+                        'action': 'run',
+                        'parameters': {'path': groups[1]},
+                        'confidence': 0.9,
+                    })
+                elif verb in ('create', 'make'):
+                    return _match({
+                        'is_command': True,
+                        'command_type': 'code',
+                        'action': 'create',
+                        'parameters': {'path': groups[1], 'content': groups[2]},
+                        'confidence': 0.9,
+                    })
+                else:
+                    # 'open ... in vscode' pattern has no verb group prefix
+                    return _match({
+                        'is_command': True,
+                        'command_type': 'code',
+                        'action': 'open_vscode',
+                        'parameters': {'path': groups[0]},
+                        'confidence': 0.95,
+                    })
+
+        # Automation commands
+        for pattern in self.command_patterns['automation']:
+            match = re.match(pattern, goal_lower)
+            if match:
+                logger.info(f"[ROUTE] Automation command detected")
+                groups = match.groups()
+                # Detect action from pattern
+                if goal_lower.startswith(('click', 'tap')):
+                    return _match({
+                        'is_command': True,
+                        'command_type': 'automation',
+                        'action': 'click',
+                        'parameters': {'x': int(groups[0]), 'y': int(groups[1])},
+                        'confidence': 0.9,
+                    })
+                elif goal_lower.startswith('double click'):
+                    return _match({
+                        'is_command': True,
+                        'command_type': 'automation',
+                        'action': 'double_click',
+                        'parameters': {'x': int(groups[0]), 'y': int(groups[1])},
+                        'confidence': 0.9,
+                    })
+                elif goal_lower.startswith('right click'):
+                    return _match({
+                        'is_command': True,
+                        'command_type': 'automation',
+                        'action': 'right_click',
+                        'parameters': {'x': int(groups[0]), 'y': int(groups[1])},
+                        'confidence': 0.9,
+                    })
+                elif goal_lower.startswith('type'):
+                    return _match({
+                        'is_command': True,
+                        'command_type': 'automation',
+                        'action': 'type',
+                        'parameters': {'text': groups[0]},
+                        'confidence': 0.9,
+                    })
+                elif 'screenshot' in goal_lower:
+                    return _match({
+                        'is_command': True,
+                        'command_type': 'automation',
+                        'action': 'screenshot',
+                        'parameters': {'filename': groups[0] if groups[0] else 'screenshot.png'},
+                        'confidence': 0.95,
+                    })
+                elif goal_lower.startswith('press'):
+                    return _match({
+                        'is_command': True,
+                        'command_type': 'automation',
+                        'action': 'press_key',
+                        'parameters': {'key': groups[0]},
+                        'confidence': 0.9,
+                    })
+                elif goal_lower.startswith('hotkey'):
+                    keys = [k.strip() for k in groups[0].split('+')]
+                    return _match({
+                        'is_command': True,
+                        'command_type': 'automation',
+                        'action': 'hotkey',
+                        'parameters': {'keys': keys},
+                        'confidence': 0.9,
+                    })
+                elif goal_lower.startswith('scroll'):
+                    direction = groups[0]
+                    amount = int(groups[1]) if groups[1] else 5
+                    clicks = amount if direction == 'up' else -amount
+                    return _match({
+                        'is_command': True,
+                        'command_type': 'automation',
+                        'action': 'scroll',
+                        'parameters': {'clicks': clicks},
+                        'confidence': 0.9,
+                    })
+                elif 'mouse position' in goal_lower:
+                    return _match({
+                        'is_command': True,
+                        'command_type': 'automation',
+                        'action': 'get_mouse_position',
+                        'parameters': {},
+                        'confidence': 0.9,
+                    })
+                elif 'screen size' in goal_lower:
+                    return _match({
+                        'is_command': True,
+                        'command_type': 'automation',
+                        'action': 'get_screen_size',
+                        'parameters': {},
+                        'confidence': 0.9,
+                    })
+                elif goal_lower.startswith('move mouse'):
+                    return _match({
+                        'is_command': True,
+                        'command_type': 'automation',
+                        'action': 'move_mouse',
+                        'parameters': {'x': int(groups[0]), 'y': int(groups[1])},
+                        'confidence': 0.9,
+                    })
+                elif goal_lower.startswith('drag'):
+                    return _match({
+                        'is_command': True,
+                        'command_type': 'automation',
+                        'action': 'drag_drop',
+                        'parameters': {'x1': int(groups[0]), 'y1': int(groups[1]), 'x2': int(groups[2]), 'y2': int(groups[3])},
+                        'confidence': 0.9,
+                    })
+
         # No command matched
         logger.info(f"[ROUTE] No command matched, needs planner")
+        logger.info(f"[ROUTER FAIL] No pattern matched for: {goal!r}")
         return {
             'is_command': False,
             'command_type': None,

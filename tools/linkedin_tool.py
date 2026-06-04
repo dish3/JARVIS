@@ -176,7 +176,7 @@ class LinkedInTool:
     # State constants — used by detect_linkedin_post_state()
     STATE_COMPOSER      = 'STATE_A'   # Main composer: Post + Add media + Schedule post visible
     STATE_IMAGE_PREVIEW = 'STATE_B'   # Image editor: Next + Back + Edit + Tag visible
-    STATE_ALT_TEXT      = 'STATE_C'   # Alt-text/caption editor: Next visible, Back NOT visible, Post NOT visible
+    STATE_ALT_TEXT      = 'STATE_C'   # Alt text editor state
     STATE_UNKNOWN       = 'STATE_UNKNOWN'
 
     def detect_linkedin_post_state(self, page) -> str:

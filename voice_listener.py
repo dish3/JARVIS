@@ -213,78 +213,116 @@ _mic_device = _select_mic_device()
 def listen_ptt(hotkey: str = "F9") -> Optional[str]:
     """Push-to-talk: hold hotkey to record, release to transcribe.
     Uses module-level VoiceListener to avoid reloading model.
-    Returns transcribed text or None."""
-    import keyboard
+    Returns transcribed text or None.
+
+    Fallback: if keyboard hooks are unavailable (e.g. no display, permission
+    error), falls back to listen_timed() which records for a fixed duration.
+    """
     import sounddevice as sd
     import numpy as np
     import tempfile
     import os
     import soundfile as sf
-    
+
     SAMPLE_RATE = 16000
-    
-    # Use module-level listener (model loaded once)
     listener = _get_voice_listener()
+
+    logger.info(f"[VOICE] Waiting for {hotkey}")
     print(f"[JARVIS] Hold {hotkey} to speak. Release to process.")
     frames = []
-    
+
     def audio_callback(indata, frame_count, time_info, status):
         if status:
             logger.warning(f"[VOICE] Audio callback status: {status}")
         frames.append(indata.copy())
-    
+
+    # ── Try keyboard hotkey mode ───────────────────────────────────────────────
+    keyboard_available = False
     try:
-        # Wait for key press
-        keyboard.wait(hotkey)
-        logger.info(f"[VOICE] Mic start — device={_mic_device} hotkey={hotkey}")
-        print("[JARVIS] Listening...")
-        frames.clear()
-        
-        # Record while key is held — use dynamically selected mic device
-        with sd.InputStream(samplerate=SAMPLE_RATE,
-                           channels=1,
-                           dtype='float32',
-                           device=_mic_device,
-                           callback=audio_callback,
-                           blocksize=4096):
-            while keyboard.is_pressed(hotkey):
-                sd.sleep(50)
-        
+        import keyboard
+        keyboard_available = True
+    except Exception as kb_err:
+        logger.warning(f"[VOICE] keyboard module unavailable: {kb_err} — using timed fallback")
+
+    try:
+        if keyboard_available:
+            # Wait for hotkey press
+            keyboard.wait(hotkey)
+            logger.info(f"[VOICE] F9 detected")
+            logger.info(f"[VOICE] Recording started — device={_mic_device}")
+            print("[JARVIS] Listening...")
+            frames.clear()
+
+            with sd.InputStream(samplerate=SAMPLE_RATE,
+                               channels=1,
+                               dtype='float32',
+                               device=_mic_device,
+                               callback=audio_callback,
+                               blocksize=4096):
+                while keyboard.is_pressed(hotkey):
+                    sd.sleep(50)
+
+            logger.info("[VOICE] Recording stopped")
+        else:
+            # Fallback: record for 5 seconds automatically
+            logger.info("[VOICE] Recording started — timed fallback (5s)")
+            print("[JARVIS] Recording for 5 seconds (no hotkey)...")
+            frames.clear()
+
+            with sd.InputStream(samplerate=SAMPLE_RATE,
+                               channels=1,
+                               dtype='float32',
+                               device=_mic_device,
+                               callback=audio_callback,
+                               blocksize=4096):
+                sd.sleep(5000)
+
+            logger.info("[VOICE] Recording stopped (timed)")
+
         print("[JARVIS] Transcribing...")
+
         if not frames:
             logger.warning("[VOICE] No audio frames captured")
             return None
-        
+
         # Convert to numpy array
         audio = np.concatenate(frames, axis=0).flatten()
-        
+        logger.info(f"[VOICE] Audio captured — {len(audio)} samples, duration={len(audio)/SAMPLE_RATE:.1f}s")
+
         # Check if audio has sufficient volume (not just silence)
         rms = np.sqrt(np.mean(audio ** 2))
+        logger.info(f"[VOICE] RMS level: {rms:.4f} (threshold=0.003)")
         if rms < 0.003:
             logger.warning(f"[VOICE] Audio too quiet (RMS: {rms:.4f}), likely silence")
             print("[JARVIS] No speech detected. Try speaking louder.")
             return None
-        
-        # Save to temp file and use existing transcribe method
+
+        # Save to temp file and transcribe
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
             temp_path = f.name
             sf.write(temp_path, audio, SAMPLE_RATE)
-        
+
         try:
-            result = listener.transcribe_audio(temp_path)
-            if result:
-                result = result.strip()
-                logger.info(f"[TRANSCRIPTION] {result}")
-                print(f"[JARVIS] Heard: {result}")
-                return result
-            else:
+            raw = listener.transcribe_audio(temp_path)
+            if not raw or not raw.strip():
                 logger.warning("[TRANSCRIPTION] Empty result from Whisper")
                 print("[JARVIS] Could not understand. Try again.")
                 return None
+
+            # Normalize: strip, lowercase, remove leading/trailing punctuation
+            import string
+            result = raw.strip()
+            result_lower = result.lower().strip(string.punctuation + ' ')
+            logger.info(f"[TRANSCRIPTION] raw={result!r}")
+            logger.info(f"[TRANSCRIPTION] normalized={result_lower!r}")
+            logger.info(f"[VOICE] Sending to router: {result_lower!r}")
+            print(f"[JARVIS] Heard: {result_lower}")
+            return result_lower
+
         finally:
             if os.path.exists(temp_path):
-                os.remove(temp_path)
-    
+                os.unlink(temp_path)
+
     except Exception as e:
         logger.error(f"[VOICE] Voice error: {e}")
         print(f"[JARVIS] Voice error: {e}")

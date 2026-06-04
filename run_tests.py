@@ -55,7 +55,7 @@ class TestRouter(unittest.TestCase):
         queries = [
             ("search google for how to learn python", "browser", "search", {"query": "how to learn python"}),
             ("google machine learning tutorials", "browser", "search", {"query": "machine learning tutorials"}),
-            ("find quantum computing", "browser", "search", {"query": "quantum computing"}),
+            ("search google for quantum computing", "browser", "search", {"query": "quantum computing"}),
             ("search web for local restaurants", "browser", "search", {"query": "local restaurants"}),
         ]
         for query, expected_tool, expected_action, expected_params in queries:
@@ -480,6 +480,54 @@ class TestVoiceComponents(unittest.TestCase):
         except Exception as e:
             # Whisper model initialization might require large downloads/Cuda
             self.skipTest(f"Skipped voice listener initialization: {e}")
+
+
+class TestLinkedInTool(unittest.TestCase):
+    """Unit tests for LinkedInTool session and credential logic"""
+
+    def setUp(self):
+        from tools.linkedin_tool import LinkedInTool
+        self.tool = LinkedInTool()
+
+    @patch.dict(os.environ, {"LINKEDIN_EMAIL": "example@example.com"}, clear=True)
+    def test_missing_credentials_handling(self):
+        # Email has example.com -> should reject
+        res = self.tool.post("test")
+        self.assertIn("Error: LinkedIn credentials not set", res)
+
+    def test_session_expired_by_url(self):
+        mock_page = MagicMock()
+        
+        # Expired cases
+        expired_urls = [
+            "https://www.linkedin.com/login",
+            "https://www.linkedin.com/checkpoint/rp/request-password-reset",
+            "https://www.linkedin.com/uas/authenticate",
+            "https://www.linkedin.com/feed/session-expired"
+        ]
+        for url in expired_urls:
+            mock_page.url = url
+            self.assertTrue(self.tool._is_session_expired(mock_page), f"Should be expired: {url}")
+
+        # Active case
+        mock_page.url = "https://www.linkedin.com/feed/"
+        # Mock #username locator to return not visible
+        mock_locator = MagicMock()
+        mock_locator.is_visible.return_value = False
+        mock_page.locator.return_value = mock_locator
+        
+        self.assertFalse(self.tool._is_session_expired(mock_page))
+
+    def test_session_expired_by_login_form_visible(self):
+        mock_page = MagicMock()
+        mock_page.url = "https://www.linkedin.com/feed/"
+        
+        # Mock #username locator to be visible (signals session expired / auth request)
+        mock_locator = MagicMock()
+        mock_locator.is_visible.return_value = True
+        mock_page.locator.return_value = mock_locator
+        
+        self.assertTrue(self.tool._is_session_expired(mock_page))
 
 
 if __name__ == '__main__':

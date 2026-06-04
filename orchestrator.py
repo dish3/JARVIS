@@ -40,6 +40,8 @@ from tools.browser_tool import BrowserTool
 from tools.search_tool import SearchTool
 from tools.linkedin_tool import LinkedInTool
 from tools.git_tool import GitTool
+from tools.code_tool import CodeTool
+from tools.automation_tool import AutomationTool
 
 
 class Orchestrator:
@@ -59,6 +61,8 @@ class Orchestrator:
         self.search_tool = SearchTool()
         self.linkedin_tool = LinkedInTool()
         self.git_tool = GitTool()
+        self.code_tool = CodeTool()
+        self.automation_tool = AutomationTool()
         
         self.tools = {
             'terminal': self.terminal_tool,
@@ -67,6 +71,8 @@ class Orchestrator:
             'search': self.search_tool,
             'linkedin': self.linkedin_tool,
             'git': self.git_tool,
+            'code': self.code_tool,
+            'automation': self.automation_tool,
         }
         
         logger.info("[OK] Orchestrator initialized successfully")
@@ -239,15 +245,14 @@ class Orchestrator:
                 else:
                     result = f"Unknown git action: {action}"
             elif tool_type == 'vscode':
-                import subprocess
-                path = parameters.get('path', '')
-                if not path.startswith(('C:', 'D:', 'E:', 'F:')):
-                    path = f"E:\\PROJECTS\\JARVIS\\VirtualAssistant\\{path}"
-                # Use full path to code.cmd in case 'code' is not on PATH
-                import shutil
-                code_exe = shutil.which('code') or r"C:\Microsoft VS Code\bin\code.cmd"
-                subprocess.Popen([code_exe, path], shell=True)
-                result = f"Opened in VS Code: {path}"
+                # Legacy — delegate to code tool
+                parameters['action'] = 'open_vscode'
+                result = self.code_tool.execute(parameters)
+            elif tool_type == 'code':
+                result = self.code_tool.execute(parameters)
+            elif tool_type == 'automation':
+                logger.warning(f"[AUTOMATION] Executing desktop action: {parameters.get('action', 'unknown')}")
+                result = self.automation_tool.execute(parameters)
             elif tool_type == 'search':
                 result = tool.search(parameters.get('query', ''))
             elif tool_type == 'linkedin':

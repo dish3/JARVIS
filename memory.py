@@ -18,7 +18,7 @@ logger = logging.getLogger('MEMORY')
 
 # memory.json lives next to this file so it works regardless of cwd
 _MEMORY_FILE = Path(__file__).parent / 'memory.json'
-_MAX_INTERACTIONS = 100
+_MAX_INTERACTIONS = 500
 
 
 class Memory:
@@ -89,15 +89,49 @@ class Memory:
         return None
 
     def get_context(self) -> Dict[str, Any]:
-        """Get current context for the planner (last 5 interactions)."""
-        recent_interactions = self.interactions[-5:] if self.interactions else []
+        """Get current context for the planner.
+        
+        Returns last 10 full interactions plus a compressed summary
+        of older interactions to give the LLM rich context without
+        token bloat.
+        """
+        recent_interactions = self.interactions[-10:] if self.interactions else []
+        older_summary = self._summarize_old_interactions()
 
         return {
             'session_duration': str(datetime.now() - self.session_start),
             'total_interactions': len(self.interactions),
             'recent_interactions': recent_interactions,
+            'older_summary': older_summary,
             'user_facts': self.user_facts,
         }
+
+    def _summarize_old_interactions(self) -> str:
+        """Compress interactions older than the last 10 into a brief summary.
+        
+        This keeps the context window manageable while preserving
+        historical awareness for the Planner.
+        """
+        if len(self.interactions) <= 10:
+            return ""
+        
+        older = self.interactions[:-10]
+        
+        # Build a compressed summary: just goals and whether they succeeded
+        summary_parts = []
+        for interaction in older[-20:]:  # Summarize at most 20 older ones
+            goal = interaction.get('goal', 'unknown')
+            result = interaction.get('result', '')
+            # Truncate result to first 50 chars
+            result_preview = str(result)[:50] if result else 'no result'
+            summary_parts.append(f"- {goal} → {result_preview}")
+        
+        prefix = f"({len(older)} older interactions"
+        if len(older) > 20:
+            prefix += f", showing last 20"
+        prefix += "):\n"
+        
+        return prefix + "\n".join(summary_parts)
 
     def get_summary(self) -> Dict[str, Any]:
         """Get memory summary."""
