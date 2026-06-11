@@ -26,6 +26,15 @@ _task_running = threading.Event()
 # Flag to stop voice listening loop
 _voice_stop = threading.Event()
 
+# Task queue for sequential processing
+_task_queue = queue.Queue()
+
+# Flag to request cancellation of current running task
+_cancel_flag = threading.Event()
+
+# Flag to stop background queue drainer loop
+_drain_stop = threading.Event()
+
 
 def _run_task(orchestrator: Orchestrator, goal: str) -> None:
     """
@@ -52,11 +61,53 @@ def _run_task(orchestrator: Orchestrator, goal: str) -> None:
 
 def submit_goal(orchestrator: Orchestrator, goal: str) -> None:
     """
-    Spawn a daemon thread to run process_goal().
-    Returns immediately — UI stays responsive.
+    Queue a goal for sequential processing by the background worker.
     """
-    t = threading.Thread(target=_run_task, args=(orchestrator, goal), daemon=True)
-    t.start()
+    _task_queue.put(goal)
+
+
+def _task_worker(orchestrator: Orchestrator) -> None:
+    """
+    Sequentially process goals from the task queue.
+    """
+    while True:
+        try:
+            goal = _task_queue.get()
+            if goal is None:
+                break
+            _cancel_flag.clear()
+            _run_task(orchestrator, goal)
+            _task_queue.task_done()
+        except Exception as e:
+            sys.stderr.write(f"[TASK WORKER ERROR] {e}\n")
+            sys.stderr.flush()
+
+
+def cancel_current_task() -> None:
+    """
+    Instantly clear the task queue, set cancel flag to abort the active task,
+    and log cancellation.
+    """
+    # Drain the task queue
+    while not _task_queue.empty():
+        try:
+            _task_queue.get_nowait()
+            _task_queue.task_done()
+        except (queue.Empty, ValueError):
+            break
+    _cancel_flag.set()
+    _result_queue.put(('[ROUTER]', 'Task execution cancelled.'))
+    print('[CANCELLED] Task queue cleared and running task cancelled.', flush=True)
+
+
+def _queue_drainer_thread(tts=None) -> None:
+    """
+    Dedicated loop running in background thread to drain the result queue
+    and print logs/speak output immediately.
+    """
+    while not _drain_stop.is_set():
+        _drain_queue(tts=tts)
+        time.sleep(0.05)
 
 
 # ── Output helpers ─────────────────────────────────────────────────────────────
@@ -117,11 +168,18 @@ def _voice_listen_once(orchestrator: Orchestrator, tts=None) -> None:
     try:
         from voice_listener import listen_ptt
 
-        _emit('[VOICE]', 'Listening... hold F9 to speak')
-        goal = listen_ptt(hotkey='F9')
+        _emit('[VOICE]', 'Listening... speak now')
+        # Disable keyboard hotkey hooks in server mode to prevent access violation crashes on Windows
+        use_keyboard = '--text-server' not in sys.argv
+        _voice_stop.clear()
+        goal = listen_ptt(hotkey='F9', stop_event=_voice_stop, use_keyboard=use_keyboard)
 
         if not goal or not goal.strip():
             _emit('[VOICE]', 'No speech detected')
+            return
+
+        if goal == '__CANCEL__':
+            cancel_current_task()
             return
 
         _emit('[TRANSCRIPTION]', goal)
@@ -168,25 +226,23 @@ def run_text_mode(orchestrator: Orchestrator) -> None:
 
     while True:
         try:
-            _drain_queue()
             goal = input('> ').strip()
             if not goal:
                 continue
+            if goal == '__CANCEL__':
+                cancel_current_task()
+                continue
             submit_goal(orchestrator, goal)
         except KeyboardInterrupt:
-            print('\n[JARVIS] Waiting for running task...')
-            _task_running.wait(timeout=5)
-            _drain_queue()
-            print('[JARVIS] Offline.')
+            print('\n[JARVIS] Cancelling and exiting...')
+            cancel_current_task()
             break
         except EOFError:
             # stdin closed (e.g. Electron killed the process)
-            _task_running.wait(timeout=5)
-            _drain_queue()
             break
 
 
-def run_text_server(orchestrator: Orchestrator) -> None:
+def run_text_server(orchestrator: Orchestrator, tts=None) -> None:
     """
     Server mode — called by Electron via --text-server flag.
     Reads newline-delimited goals from stdin.
@@ -200,24 +256,19 @@ def run_text_server(orchestrator: Orchestrator) -> None:
     logging.getLogger().setLevel(logging.WARNING)
     for name in ['ORCHESTRATOR', 'ROUTER', 'PLANNER', 'MEMORY',
                  'TERMINAL_TOOL', 'FILE_TOOL', 'BROWSER_TOOL',
-                 'SEARCH_TOOL', 'LINKEDIN_TOOL', 'GIT_TOOL', 'VOICE_LISTENER']:
+                 'SEARCH_TOOL', 'LINKEDIN_TOOL', 'GIT_TOOL', 'VOICE_LISTENER', 'AUTOMATION_TOOL']:
         logging.getLogger(name).setLevel(logging.WARNING)
 
     print('[JARVIS SERVER] Ready', flush=True)
-
-    try:
-        from voice_output import VoiceOutput
-        tts = VoiceOutput()
-    except Exception:
-        tts = None
 
     for raw_line in sys.stdin:
         goal = raw_line.strip()
         if not goal:
             continue
 
-        # Drain any completed results before processing new input
-        _drain_queue(tts=tts)
+        if goal == '__CANCEL__':
+            cancel_current_task()
+            continue
 
         if goal == '__VOICE__':
             # Trigger one voice listen cycle in background
@@ -225,7 +276,7 @@ def run_text_server(orchestrator: Orchestrator) -> None:
             continue
 
         if goal == '__STOP_VOICE__':
-            # Voice is one-shot per trigger — nothing to stop
+            _voice_stop.set()
             continue
 
         # Regular text goal — log route before submitting
@@ -237,34 +288,26 @@ def run_text_server(orchestrator: Orchestrator) -> None:
 
         submit_goal(orchestrator, goal)
 
-        # Give the background thread a moment to emit [TASK STARTED]
-        time.sleep(0.05)
-        _drain_queue(tts=tts)
 
-    # stdin closed — wait for last task
-    _task_running.wait(timeout=10)
-    _drain_queue(tts=tts)
-
-
-def run_voice_mode(orchestrator: Orchestrator) -> None:
+def run_voice_mode(orchestrator: Orchestrator, tts=None) -> None:
     """
     Voice mode — terminal push-to-talk loop.
     Voice listening and task execution run concurrently.
     """
     from voice_listener import listen_ptt
-    from voice_output import VoiceOutput
 
-    tts = VoiceOutput()
     print('Voice mode. Hold F9 to speak. Ctrl+C to exit.\n', flush=True)
 
     while True:
         try:
-            _drain_queue(tts=tts)
-
             _emit('[VOICE]', 'Hold F9 to speak...')
             goal = listen_ptt(hotkey='F9')
 
             if not goal or not goal.strip():
+                continue
+
+            if goal == '__CANCEL__':
+                cancel_current_task()
                 continue
 
             _emit('[TRANSCRIPTION]', goal)
@@ -278,10 +321,8 @@ def run_voice_mode(orchestrator: Orchestrator) -> None:
             submit_goal(orchestrator, goal)
 
         except KeyboardInterrupt:
-            print('\n[JARVIS] Waiting for running task...')
-            _task_running.wait(timeout=5)
-            _drain_queue(tts=tts)
-            print('[JARVIS] Offline.')
+            print('\n[JARVIS] Cancelling and exiting...')
+            cancel_current_task()
             break
 
 
@@ -291,12 +332,35 @@ def main():
     print_banner()
     orchestrator = Orchestrator()
 
+    # Setup cancel flag
+    orchestrator.cancel_flag = _cancel_flag
+
+    # Spawn sequential worker thread
+    worker_thread = threading.Thread(target=_task_worker, args=(orchestrator,), daemon=True)
+    worker_thread.start()
+
+    # Instantiate TTS if in server/voice mode or try to instantiate always
+    tts = None
+    if '--voice' in sys.argv or '--text-server' in sys.argv:
+        try:
+            from voice_output import VoiceOutput
+            tts = VoiceOutput()
+        except Exception as e:
+            print(f"Warning: Could not initialize voice output: {e}", flush=True)
+
+    # Spawn background queue drainer thread
+    drainer_thread = threading.Thread(target=_queue_drainer_thread, args=(tts,), daemon=True)
+    drainer_thread.start()
+
     if '--text-server' in sys.argv:
-        run_text_server(orchestrator)
+        run_text_server(orchestrator, tts=tts)
     elif '--voice' in sys.argv:
-        run_voice_mode(orchestrator)
+        run_voice_mode(orchestrator, tts=tts)
     else:
         run_text_mode(orchestrator)
+
+    # Stop the drainer loop when main exits
+    _drain_stop.set()
 
 
 if __name__ == '__main__':

@@ -25,8 +25,8 @@ class Router:
         return {
             'browser_open': [
                 r'^(open|go to|visit|browse)\s+(?:https?://)?(.+?)\s+in\s+(chrome|firefox|edge|safari|ie)$',
-                r'^(open|go to|visit|browse)\s+(?:https?://)?(.+)$',
-                r'^(open|launch)\s+(?:browser|chrome|firefox|edge)\s+(.+)$',
+                r'^(open|go to|visit|browse)\s+(?:https?://)?([^,]+?)(?:\s+in\s+(chrome|firefox|edge|safari))?$',
+                r'^(open|launch)\s+(?:browser|chrome|firefox|edge)\s+([^,]+)$',
             ],
             'browser_image': [
                 r'^(generate|create|make)\s+(?:an?\s+)?image\s+(?:of\s+)?(.+)$',
@@ -90,7 +90,8 @@ class Router:
                 r'^(show|display)\s+file\s+(.+)$',
             ],
             'file_write': [
-                r'^(create|write|save)\s+(?:file\s+)?(.+?)\s+(?:with\s+)?(?:content\s+)?(.+)$',
+                r'^create\s+file\s+(.+?)\s+(?:with\s+)?(?:content\s+)?(.+)$',
+                r'^(write|save)\s+(?:file\s+)?(.+?)\s+(?:with\s+)?(?:content\s+)?(.+)$',
                 r'^(write|save)\s+(.+?)\s+to\s+(.+)$',
             ],
             'file_list': [
@@ -135,10 +136,31 @@ class Router:
                 'confidence': float (0-1),
             }
         """
+        goal_lower = goal.strip().lower()
         logger.info(f"[ROUTE] Analyzing: {goal}")
-        logger.info(f"[ROUTER INPUT] {goal!r}")
-
-        goal_lower = goal.lower().strip()
+        logger.info(f"[ROUTER INPUT] '{goal_lower}'")
+        
+        # ── Compound command detection ─────────────────────────────────────
+        # If the user gives a multi-step command (uses commas, "and then",
+        # "then", etc.), skip pattern matching and let the Planner handle it.
+        compound_markers = [', ', ' and then ', ' then ', ' after that ', ' afterwards ']
+        has_compound = any(marker in goal_lower for marker in compound_markers)
+        # Also check for " and " but only if it's followed by an action verb
+        action_verbs = ['sign', 'login', 'log in', 'post', 'open', 'click', 'type',
+                        'search', 'create', 'write', 'read', 'run', 'take', 'send',
+                        'delete', 'download', 'upload', 'close', 'save', 'share']
+        if ' and ' in goal_lower:
+            after_and = goal_lower.split(' and ', 1)[1].strip()
+            if any(after_and.startswith(verb) for verb in action_verbs):
+                has_compound = True
+        
+        if has_compound:
+            logger.info(f"[ROUTE] Compound command detected, delegating to planner")
+            return {
+                'is_command': False,
+                'needs_planner': True,
+                'confidence': 0.0,
+            }
 
         def _match(result: dict) -> dict:
             """Log a successful match and return the result unchanged."""
@@ -170,8 +192,8 @@ class Router:
                 logger.info(f"[ROUTE] Browser open command detected")
                 groups = match.groups()
                 
-                # Check if browser is specified (3 groups) or not (2 groups)
-                if len(groups) == 3:
+                # Check if browser is specified (group 3 is not None) or not
+                if len(groups) >= 3 and groups[2] is not None:
                     url = groups[1].strip()
                     browser = groups[2].strip()
                 else:

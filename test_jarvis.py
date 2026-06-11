@@ -174,8 +174,10 @@ def test_router_vscode_open():
     res = router.route("open file orchestrator.py in vscode")
     if not res.get("is_command"):
         return False, "Not detected as command"
-    if res.get("command_type") != "vscode":
-        return False, f"Expected vscode command, got: {res.get('command_type')}"
+    if res.get("command_type") != "code":
+        return False, f"Expected code command, got: {res.get('command_type')}"
+    if res.get("action") != "open_vscode":
+        return False, f"Expected action 'open_vscode', got: {res.get('action')}"
     return True, ""
 
 
@@ -342,13 +344,10 @@ def test_orchestrator_file_list():
 
 def test_linkedin_constants():
     # Verify constants exist
-    for attr in ["STATE_COMPOSER", "STATE_IMAGE_PREVIEW", "STATE_ALT_TEXT", "STATE_UNKNOWN"]:
+    for attr in ["STATE_COMPOSER", "STATE_IMAGE_PREVIEW", "STATE_TRANSITIONING", "STATE_POST_READY", "STATE_UNKNOWN"]:
         if not hasattr(LinkedInTool, attr):
             return False, f"LinkedInTool missing constant: {attr}"
             
-    if LinkedInTool.STATE_ALT_TEXT != "STATE_C":
-        return False, f"Expected STATE_ALT_TEXT == 'STATE_C', got: {LinkedInTool.STATE_ALT_TEXT}"
-        
     # Verify detect_linkedin_post_state is callable
     tool = LinkedInTool()
     if not hasattr(tool, "detect_linkedin_post_state") or not callable(getattr(tool, "detect_linkedin_post_state")):

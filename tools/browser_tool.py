@@ -247,6 +247,7 @@ class BrowserTool:
         """
         import httpx
         import urllib.parse
+        import json
         from pathlib import Path
         from datetime import datetime
         
@@ -263,6 +264,29 @@ class BrowserTool:
             filename = save_dir / f"image_{timestamp}.png"
             
             with httpx.stream("GET", url, follow_redirects=True, timeout=60) as r:
+                if r.status_code != 200:
+                    r.read()
+                    error_text = r.text
+                    try:
+                        err_json = json.loads(error_text)
+                        err_msg = err_json.get("error", error_text)
+                    except Exception:
+                        err_msg = error_text
+                    logger.error(f"[BROWSER] Image generation API error ({r.status_code}): {err_msg}")
+                    return f"Error generating image: API returned code {r.status_code} - {err_msg}"
+                
+                content_type = r.headers.get("content-type", "")
+                if "image" not in content_type:
+                    r.read()
+                    error_text = r.text
+                    try:
+                        err_json = json.loads(error_text)
+                        err_msg = err_json.get("error", error_text)
+                    except Exception:
+                        err_msg = error_text
+                    logger.error(f"[BROWSER] Image generation API returned non-image content ({content_type}): {err_msg}")
+                    return f"Error generating image: API returned non-image content - {err_msg}"
+
                 with open(filename, "wb") as f:
                     for chunk in r.iter_bytes():
                         f.write(chunk)

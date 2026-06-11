@@ -261,6 +261,46 @@ test("Route: 'scroll down 10'", test_router_scroll)
 test("Route: 'hotkey ctrl+c'", test_router_hotkey)
 test("Route: 'press enter'", test_router_press_key)
 
+def test_router_compound_command():
+    from router import Router
+    r = Router()
+    # Multi-step command should NOT be pattern-matched — goes to Planner
+    result = r.route("open linkedin, sign in my account and post something")
+    assert result['is_command'] == False, f"Compound command should go to planner, got: {result}"
+    return True
+
+def test_router_compound_and():
+    from router import Router
+    r = Router()
+    # "and post" has an action verb after "and"
+    result = r.route("open linkedin and post hello world")
+    assert result['is_command'] == False, f"'and post' should trigger compound detection"
+    return True
+
+def test_router_simple_open():
+    from router import Router
+    r = Router()
+    # Simple single command should still work
+    result = r.route("open linkedin")
+    assert result['is_command'] == True
+    assert result['command_type'] == 'browser'
+    assert 'linkedin' in result['parameters']['url']
+    return True
+
+def test_router_open_in_browser():
+    from router import Router
+    r = Router()
+    result = r.route("open youtube in chrome")
+    assert result['is_command'] == True
+    assert result['command_type'] == 'browser'
+    assert 'youtube' in result['parameters']['url']
+    return True
+
+test("Route: compound (comma)", test_router_compound_command)
+test("Route: compound ('and post')", test_router_compound_and)
+test("Route: simple 'open linkedin'", test_router_simple_open)
+test("Route: 'open youtube in chrome'", test_router_open_in_browser)
+
 
 # ── Phase 4: Memory ──────────────────────────────────────────────────────────
 print("\n💾 Phase 4: Memory (upgraded)")
@@ -332,6 +372,40 @@ def test_orchestrator_tools():
 test("Orchestrator imports", test_orchestrator_import)
 test("Orchestrator has 8 tools", test_orchestrator_tools)
 
+# ── Phase 5.5: Language Processing (New) ─────────────────────────────────────
+print("\n🗣️ Phase 5.5: Language Detection & Translation")
+
+def test_language_detection_english():
+    from planner import Planner
+    p = Planner()
+    lang = p.detect_language("take a screenshot of my desktop")
+    assert lang == 'en', f"Expected 'en' for English screenshot command, got {lang}"
+    return True
+
+def test_language_detection_hindi_live():
+    from planner import Planner
+    p = Planner()
+    if not p._groq_available:
+        print(f"    {WARN} Groq not available — skipping live Hindi detection test")
+        return True
+    lang = p.detect_language("स्क्रीनशॉट लो")
+    assert lang == 'hi', f"Expected 'hi' for Hindi screenshot command, got {lang}"
+    return True
+
+def test_translation_live():
+    from planner import Planner
+    p = Planner()
+    if not p._groq_available:
+        print(f"    {WARN} Groq not available — skipping live translation test")
+        return True
+    translated = p.translate_text("स्क्रीनशॉट लो", "en")
+    assert 'screenshot' in translated.lower() or 'take' in translated.lower(), f"Expected English screenshot translation, got '{translated}'"
+    return True
+
+test("Language detection: English", test_language_detection_english)
+test("Language detection: Hindi (live)", test_language_detection_hindi_live)
+test("Translation: Hindi to English (live)", test_translation_live)
+
 
 # ── Phase 6: Live Groq Test ──────────────────────────────────────────────────
 print("\n🌐 Phase 6: Live AI Test")
@@ -364,6 +438,78 @@ def test_groq_tool_selection():
 
 test("Groq live: 'What is 2+2?'", test_groq_live)
 test("Groq live: tool selection", test_groq_tool_selection)
+
+
+# ── Phase 7: Brain Stabilization Upgrades ────────────────────────────────────
+print("\n🔒 Phase 7: Stabilization Upgrades")
+
+def test_tool_structured_output_format():
+    from tools.automation_tool import AutomationTool
+    t = AutomationTool()
+    res = t.execute({'action': 'click', 'x': 100, 'y': 200, 'dry_run': True})
+    assert isinstance(res, dict), "Result should be a dictionary"
+    assert 'status' in res, "Result missing status key"
+    assert 'logs' in res, "Result missing logs key"
+    assert 'screenshots' in res, "Result missing screenshots key"
+    assert 'state' in res, "Result missing state key"
+    assert 'result' in res, "Result missing result key"
+    return True
+
+def test_destructive_action_blocking():
+    from tools.automation_tool import AutomationTool
+    t = AutomationTool()
+    res = t.execute({'action': 'press_key', 'key': 'delete'})
+    assert res['status'] == 'failed', "Destructive press_key without confirm should fail"
+    assert "blocked" in res['result']['message'].lower()
+    
+    res = t.execute({'action': 'hotkey', 'keys': 'alt+f4'})
+    assert res['status'] == 'failed', "Destructive alt+f4 hotkey without confirm should fail"
+    assert "blocked" in res['result']['message'].lower()
+    
+    res = t.execute({'action': 'press_key', 'key': 'delete', 'confirm': True, 'dry_run': True})
+    assert res['status'] == 'success', "Destructive action with confirm=True should succeed (dry-run)"
+    return True
+
+def test_dry_run_flag_simulation():
+    from tools.automation_tool import AutomationTool
+    t = AutomationTool()
+    res = t.execute({'action': 'click', 'x': 500, 'y': 500, 'dry_run': True})
+    assert res['status'] == 'success'
+    assert any("dry-run" in l.lower() or "simulating" in l.lower() for l in res['logs']), "Dry run not mentioned in logs"
+    return True
+
+def test_task_queue_worker_execution():
+    import queue
+    import threading
+    import time
+    from main import submit_goal, _task_worker
+    from orchestrator import Orchestrator
+    
+    class MockOrchestrator(Orchestrator):
+        def __init__(self):
+            self.tools = {}
+            self.processed_goals = []
+            self.cancel_flag = None
+        def process_goal(self, goal, context=None):
+            time.sleep(0.1)
+            self.processed_goals.append(goal)
+            return {'success': True, 'result': f"Processed {goal}"}
+            
+    mock_orch = MockOrchestrator()
+    worker_thread = threading.Thread(target=_task_worker, args=(mock_orch,), daemon=True)
+    worker_thread.start()
+    
+    submit_goal(mock_orch, "task_1")
+    submit_goal(mock_orch, "task_2")
+    
+    time.sleep(0.5)
+    assert mock_orch.processed_goals == ["task_1", "task_2"], f"Expected ['task_1', 'task_2'], got {mock_orch.processed_goals}"
+    return True
+
+test("Tool structured output format validation", test_tool_structured_output_format)
+test("Destructive action blocking", test_destructive_action_blocking)
+test("Dry-run flag simulation", test_dry_run_flag_simulation)
+test("Task queue worker execution", test_task_queue_worker_execution)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

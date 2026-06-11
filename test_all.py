@@ -116,7 +116,7 @@ check_route("git log",                 "git log last 5",                     "gi
 check_route("linkedin post",           "post to linkedin: hello world",      "linkedin","post")
 check_route("linkedin post+image",     "post to linkedin: hi | image: E:\\test.png", "linkedin", "post")
 check_route("linkedin delete",         "delete my last linkedin post",       "linkedin","delete")
-check_route("vscode open",             "open file main.py in vscode",        "vscode",  "open")
+check_route("vscode open",             "open file main.py in vscode",        "code",  "open_vscode")
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 try:

@@ -143,8 +143,8 @@ class TestRouter(unittest.TestCase):
         query = "open main.py in vscode"
         res = self.router.route(query)
         self.assertTrue(res["is_command"])
-        self.assertEqual(res["command_type"], "vscode")
-        self.assertEqual(res["action"], "open")
+        self.assertEqual(res["command_type"], "code")
+        self.assertEqual(res["action"], "open_vscode")
         self.assertEqual(res["parameters"]["path"], "main.py")
 
     def test_image_generation_routing(self):
@@ -493,7 +493,8 @@ class TestLinkedInTool(unittest.TestCase):
     def test_missing_credentials_handling(self):
         # Email has example.com -> should reject
         res = self.tool.post("test")
-        self.assertIn("Error: LinkedIn credentials not set", res)
+        self.assertEqual(res["status"], "failed")
+        self.assertIn("Error: LinkedIn credentials not set", res["result"]["message"])
 
     def test_session_expired_by_url(self):
         mock_page = MagicMock()

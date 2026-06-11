@@ -13,6 +13,7 @@ import logging
 import os
 import time
 import requests
+import re
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 
@@ -197,40 +198,64 @@ class Planner:
         """
         logger.info(f"[PLANNER] Planning: {goal}")
 
-        # Build context string for the prompt
-        context_str = ""
+        # Build system content with static user facts
+        system_content = SYSTEM_PROMPT
         if context:
-            recent = context.get('recent_interactions', [])
-            if recent:
-                history = []
-                for interaction in recent[-5:]:
-                    g = interaction.get('goal', '')
-                    r = str(interaction.get('result', ''))[:100]
-                    history.append(f"User: {g} → Result: {r}")
-                context_str = "\n\nRecent conversation:\n" + "\n".join(history)
-
-            older_summary = context.get('older_summary', '')
-            if older_summary:
-                context_str += f"\n\nOlder history summary:\n{older_summary}"
-
             facts = context.get('user_facts', {})
             if facts:
                 fact_strs = [f"{k}: {v.get('value', v) if isinstance(v, dict) else v}"
                              for k, v in facts.items()]
-                context_str += "\n\nKnown user facts:\n" + "\n".join(fact_strs)
+                system_content += "\n\nKnown user facts:\n" + "\n".join(fact_strs)
 
-        user_message = f"Goal: {goal}{context_str}"
+        messages = [{"role": "system", "content": system_content}]
+
+        # Add older history summary if available
+        if context:
+            older_summary = context.get('older_summary', '')
+            if older_summary:
+                messages.append({"role": "system", "content": f"Older history summary:\n{older_summary}"})
+
+            # Add recent conversation history as alternating messages
+            recent = context.get('recent_interactions', [])
+            if recent:
+                for interaction in recent[-10:]:
+                    g = interaction.get('goal', '')
+                    r = str(interaction.get('result', ''))
+                    if len(r) > 200:
+                        r = r[:200] + "... (truncated)"
+                    
+                    # 1. User goal message
+                    messages.append({"role": "user", "content": f"Goal: {g}"})
+                    
+                    # 2. Assistant response/reasoning JSON
+                    assistant_resp = interaction.get('assistant_response')
+                    if assistant_resp:
+                        messages.append({"role": "assistant", "content": assistant_resp})
+                    else:
+                        # Fallback for router commands or old format
+                        messages.append({"role": "assistant", "content": json.dumps({
+                            "tool": None,
+                            "action": None,
+                            "parameters": {},
+                            "response": r
+                        })})
+                    
+                    # 3. Tool execution/text result message
+                    messages.append({"role": "user", "content": f"Tool Result: {r}"})
+
+        # Append current user goal
+        messages.append({"role": "user", "content": f"Goal: {goal}"})
 
         # Try Groq first
         if AI_BACKEND in ('groq', 'auto') and self._groq_available:
-            result = self._plan_with_groq(user_message, goal)
+            result = self._plan_with_groq(messages, goal)
             if result:
                 return result
             logger.warning("[PLANNER] Groq failed, trying Ollama fallback...")
 
         # Fallback to Ollama
         if AI_BACKEND in ('ollama', 'auto'):
-            result = self._plan_with_ollama(user_message, goal)
+            result = self._plan_with_ollama(messages, goal)
             if result:
                 return result
 
@@ -239,7 +264,7 @@ class Planner:
 
     # ── Groq backend ──────────────────────────────────────────────────────────
 
-    def _plan_with_groq(self, user_message: str, goal: str) -> Optional[Dict[str, Any]]:
+    def _plan_with_groq(self, messages: list, goal: str) -> Optional[Dict[str, Any]]:
         """Plan using Groq API with chat completions."""
         if not self._groq_client:
             return None
@@ -249,10 +274,7 @@ class Planner:
                 logger.info(f"[GROQ] Calling {GROQ_MODEL} (attempt {attempt})...")
 
                 chat_completion = self._groq_client.chat.completions.create(
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_message},
-                    ],
+                    messages=messages,
                     model=GROQ_MODEL,
                     temperature=TEMPERATURE,
                     max_tokens=1024,
@@ -275,14 +297,19 @@ class Planner:
 
     # ── Ollama backend ─────────────────────────────────────────────────────────
 
-    def _plan_with_ollama(self, user_message: str, goal: str) -> Optional[Dict[str, Any]]:
+    def _plan_with_ollama(self, messages: list, goal: str) -> Optional[Dict[str, Any]]:
         """Plan using local Ollama as fallback."""
         if not self._is_ollama_available():
             logger.warning("[OLLAMA] Health check failed — not reachable")
             return None
 
-        # Build a combined prompt (Ollama uses raw text, not chat format)
-        prompt = f"{SYSTEM_PROMPT}\n\nUser: {user_message}"
+        # Build a combined prompt from messages (Ollama uses single prompt format)
+        prompt_parts = []
+        for msg in messages:
+            role = msg['role'].upper()
+            content = msg['content']
+            prompt_parts.append(f"[{role}]\n{content}")
+        prompt = "\n\n".join(prompt_parts) + "\n\n[ASSISTANT]"
 
         for attempt in range(1, MAX_RETRIES + 1):
             try:
@@ -446,6 +473,118 @@ class Planner:
             'response': response,
             'reasoning': response_text,
         }
+
+    # ── Language Detection & Translation ───────────────────────────────────────
+
+    def detect_language(self, text: str) -> str:
+        """Detect the ISO 639-1 language code of the text (e.g., 'en', 'hi', 'es').
+        
+        Returns 'en' by default or if detection fails/is English.
+        """
+        # Quick check: if the goal starts with common English command verbs, fast-track to 'en'
+        goal_lower = text.strip().lower()
+        if goal_lower.startswith(('open', 'go to', 'visit', 'browse', 'click', 'type', 'press', 'hotkey', 'scroll', 'move', 'drag', 'take screenshot')):
+            return 'en'
+
+        # If it's completely basic ASCII with no special patterns, it's likely English
+        if all(ord(c) < 128 for c in text) and len(goal_lower.split()) < 4:
+            return 'en'
+
+        prompt = (
+            "Detect the language of the user input below. "
+            "Respond with ONLY the 2-letter ISO 639-1 language code (e.g. 'en', 'hi', 'es', 'fr', 'ja', 'ru'). "
+            "Do not output any other text.\n\n"
+            f"Input: \"{text}\""
+        )
+
+        try:
+            if self._groq_available and self._groq_client:
+                logger.info(f"[PLANNER] Detecting language of input via Groq...")
+                completion = self._groq_client.chat.completions.create(
+                    messages=[{"role": "user", "content": prompt}],
+                    model=GROQ_MODEL,
+                    temperature=0.0,
+                    max_tokens=5,
+                    timeout=5,
+                )
+                lang = completion.choices[0].message.content.strip().lower()
+                match = re.search(r'\b([a-z]{2})\b', lang)
+                if match:
+                    detected = match.group(1)
+                    logger.info(f"[PLANNER] Detected language: {detected}")
+                    return detected
+            elif self._is_ollama_available():
+                logger.info(f"[PLANNER] Detecting language of input via Ollama...")
+                response = requests.post(
+                    OLLAMA_URL,
+                    json={
+                        "model": OLLAMA_MODEL,
+                        "prompt": prompt,
+                        "stream": False,
+                        "temperature": 0.0,
+                    },
+                    timeout=5,
+                )
+                if response.status_code == 200:
+                    lang = response.json().get('response', '').strip().lower()
+                    match = re.search(r'\b([a-z]{2})\b', lang)
+                    if match:
+                        detected = match.group(1)
+                        logger.info(f"[PLANNER] Detected language: {detected}")
+                        return detected
+        except Exception as e:
+            logger.warning(f"[PLANNER] Language detection failed: {e}")
+
+        return 'en'
+
+    def translate_text(self, text: str, target_lang: str) -> str:
+        """Translate text to the target language code (e.g., 'en', 'hi')."""
+        if not text or not text.strip():
+            return text
+
+        prompt = (
+            f"Translate the following text to the language code '{target_lang}'. "
+            "Respond with ONLY the translated text. Do not add quotes, markdown, explanations, or preface.\n\n"
+            f"Text: \"{text}\""
+        )
+
+        try:
+            if self._groq_available and self._groq_client:
+                logger.info(f"[PLANNER] Translating text to '{target_lang}' via Groq...")
+                completion = self._groq_client.chat.completions.create(
+                    messages=[{"role": "user", "content": prompt}],
+                    model=GROQ_MODEL,
+                    temperature=0.1,
+                    max_tokens=512,
+                    timeout=10,
+                )
+                translation = completion.choices[0].message.content.strip()
+                if translation.startswith('"') and translation.endswith('"'):
+                    translation = translation[1:-1]
+                logger.info(f"[PLANNER] Translation successful")
+                return translation
+            elif self._is_ollama_available():
+                logger.info(f"[PLANNER] Translating text to '{target_lang}' via Ollama...")
+                response = requests.post(
+                    OLLAMA_URL,
+                    json={
+                        "model": OLLAMA_MODEL,
+                        "prompt": prompt,
+                        "stream": False,
+                        "temperature": 0.1,
+                    },
+                    timeout=10,
+                )
+                if response.status_code == 200:
+                    translation = response.json().get('response', '').strip()
+                    if translation.startswith('"') and translation.endswith('"'):
+                        translation = translation[1:-1]
+                    logger.info(f"[PLANNER] Translation successful")
+                    return translation
+        except Exception as e:
+            logger.warning(f"[PLANNER] Translation failed: {e}")
+
+        return text
 
     # ── Fallback responses ─────────────────────────────────────────────────────
 

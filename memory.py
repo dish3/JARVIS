@@ -53,13 +53,15 @@ class Memory:
 
     # ── Public API (signatures unchanged) ─────────────────────────────────────
 
-    def store_interaction(self, goal: str, result: Any) -> None:
+    def store_interaction(self, goal: str, result: Any, assistant_response: Optional[str] = None) -> None:
         """Store a goal-result interaction and persist to disk."""
         interaction = {
             'timestamp': datetime.now().isoformat(),
             'goal': goal,
             'result': result,
         }
+        if assistant_response:
+            interaction['assistant_response'] = assistant_response
 
         self.interactions.append(interaction)
         logger.info(f"[MEMORY] Stored interaction #{len(self.interactions)}")

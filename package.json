@@ -10,7 +10,8 @@
   "author": "Akshat Singh",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^33.0.0"
+    "electron": "^33.0.0",
+    "electron-builder": "^24.13.3"
   },
   "build": {
     "mac": {
