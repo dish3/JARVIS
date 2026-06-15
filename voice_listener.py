@@ -239,8 +239,11 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
     SAMPLE_RATE = 16000
     listener = _get_voice_listener()
 
-    logger.info(f"[VOICE] Waiting for {hotkey} (use_keyboard={use_keyboard})")
-    print(f"[JARVIS] Hold {hotkey} to speak. Release to process.")
+    if use_keyboard:
+        logger.info(f"[VOICE] Waiting for {hotkey} (use_keyboard={use_keyboard})")
+        print(f"[JARVIS] Hold {hotkey} to speak. Release to process.")
+    else:
+        logger.info("[VOICE] Microphone active")
     frames = []
 
     def audio_callback(indata, frame_count, time_info, status):

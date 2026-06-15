@@ -181,7 +181,7 @@
       console.log('[RENDERER] Start Listening clicked');
       setListeningState(true);
       setStatus('LISTENING', true);
-      showJarvisText('Hold F9 and speak your command...');
+      showJarvisText('Listening... speak your command now.');
 
       // Send __VOICE__ to Python — triggers one listen_ptt() cycle
       window.jarvis.startVoice();
