@@ -294,12 +294,13 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
                                callback=audio_callback,
                                blocksize=4096):
                 
+                has_spoken = False
                 silence_threshold = 0.003
-                silence_duration_limit = 1.5  # seconds
+                initial_silence_limit = 4.0  # 4 seconds to start speaking
+                active_silence_limit = 1.5   # 1.5 seconds of silence to stop after speaking
                 max_duration = 15.0  # seconds
                 
                 chunk_duration = 4096 / SAMPLE_RATE
-                silence_chunks_needed = int(silence_duration_limit / chunk_duration)
                 max_chunks = int(max_duration / chunk_duration)
                 
                 silence_count = 0
@@ -317,13 +318,17 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
                         # Check last frame's root-mean-square (RMS) energy
                         last_frame = frames[-1].flatten()
                         rms = np.sqrt(np.mean(last_frame ** 2)) if len(last_frame) > 0 else 0
-                        if rms < silence_threshold:
-                            silence_count += 1
-                        else:
+                        if rms >= silence_threshold:
+                            has_spoken = True
                             silence_count = 0
+                        else:
+                            silence_count += 1
                             
-                    if silence_count >= silence_chunks_needed:
-                        logger.info(f"[VOICE] Silence detected ({silence_duration_limit}s) — auto-stopping")
+                    limit = active_silence_limit if has_spoken else initial_silence_limit
+                    chunks_needed = int(limit / chunk_duration)
+                    
+                    if silence_count >= chunks_needed:
+                        logger.info(f"[VOICE] Silence detected ({limit}s) — auto-stopping")
                         break
                         
             logger.info("[VOICE] Recording stopped (auto-stop)")

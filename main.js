@@ -7,6 +7,7 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
+const os = require('os');
 
 let win = null;
 let pyProcess = null;
@@ -87,6 +88,44 @@ ipcMain.on('stop-voice', (_event) => {
 
 // ── Window ─────────────────────────────────────────────────────────────────────
 
+// Helpers for calculating live stats
+function getCPUUsage() {
+  const cpus = os.cpus();
+  let user = 0, nice = 0, sys = 0, idle = 0, irq = 0;
+  for (let cpu of cpus) {
+    if (!cpu.times) continue;
+    user += cpu.times.user;
+    nice += cpu.times.nice;
+    sys += cpu.times.sys;
+    idle += cpu.times.idle;
+    irq += cpu.times.irq;
+  }
+  const total = user + nice + sys + idle + irq;
+  return { idle, total };
+}
+
+let startCPU = getCPUUsage();
+
+function calculateCPUPercentage() {
+  const endCPU = getCPUUsage();
+  const idleDifference = endCPU.idle - startCPU.idle;
+  const totalDifference = endCPU.total - startCPU.total;
+  startCPU = endCPU;
+  
+  if (totalDifference === 0) return 0;
+  return Math.min(100, Math.max(0, Math.floor(100 - (100 * idleDifference / totalDifference))));
+}
+
+function getRAMStats() {
+  const totalMem = os.totalmem();
+  const freeMem = os.freemem();
+  const usedMem = totalMem - freeMem;
+  const percentage = Math.floor((usedMem / totalMem) * 100);
+  const totalGB = (totalMem / (1024 ** 3)).toFixed(1);
+  const usedGB = (usedMem / (1024 ** 3)).toFixed(1);
+  return { percentage, usedGB, totalGB };
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1400,
@@ -104,8 +143,18 @@ function createWindow() {
 
   win.loadFile('index.html');
 
+  // Start polling system metrics every 2 seconds
+  const statsInterval = setInterval(() => {
+    if (win && !win.webContents.isDestroyed()) {
+      const cpu = calculateCPUPercentage();
+      const ram = getRAMStats();
+      win.webContents.send('sys-stats', { cpu, ram });
+    }
+  }, 2000);
+
   win.on('closed', () => {
     win = null;
+    clearInterval(statsInterval);
   });
 }
 

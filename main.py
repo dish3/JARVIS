@@ -100,14 +100,38 @@ def cancel_current_task() -> None:
     print('[CANCELLED] Task queue cleared and running task cancelled.', flush=True)
 
 
-def _queue_drainer_thread(tts=None) -> None:
+def _queue_drainer_thread(tts_enabled: bool = False) -> None:
     """
     Dedicated loop running in background thread to drain the result queue
     and print logs/speak output immediately.
     """
-    while not _drain_stop.is_set():
-        _drain_queue(tts=tts)
-        time.sleep(0.05)
+    tts = None
+    if tts_enabled:
+        import sys
+        if sys.platform == 'win32':
+            try:
+                import ctypes
+                ctypes.windll.ole32.CoInitialize(None)
+            except Exception as com_err:
+                sys.stderr.write(f"[VOICE] CoInitialize failed in drainer: {com_err}\n")
+        
+        try:
+            from voice_output import VoiceOutput
+            tts = VoiceOutput()
+        except Exception as e:
+            sys.stderr.write(f"Warning: Could not initialize voice output in background thread: {e}\n")
+
+    try:
+        while not _drain_stop.is_set():
+            _drain_queue(tts=tts)
+            time.sleep(0.05)
+    finally:
+        if tts and sys.platform == 'win32':
+            try:
+                import ctypes
+                ctypes.windll.ole32.CoUninitialize()
+            except:
+                pass
 
 
 # ── Output helpers ─────────────────────────────────────────────────────────────
@@ -340,22 +364,16 @@ def main():
     worker_thread.start()
 
     # Instantiate TTS if in server/voice mode or try to instantiate always
-    tts = None
-    if '--voice' in sys.argv or '--text-server' in sys.argv:
-        try:
-            from voice_output import VoiceOutput
-            tts = VoiceOutput()
-        except Exception as e:
-            print(f"Warning: Could not initialize voice output: {e}", flush=True)
+    tts_enabled = '--voice' in sys.argv or '--text-server' in sys.argv
 
     # Spawn background queue drainer thread
-    drainer_thread = threading.Thread(target=_queue_drainer_thread, args=(tts,), daemon=True)
+    drainer_thread = threading.Thread(target=_queue_drainer_thread, args=(tts_enabled,), daemon=True)
     drainer_thread.start()
 
     if '--text-server' in sys.argv:
-        run_text_server(orchestrator, tts=tts)
+        run_text_server(orchestrator, tts=None)
     elif '--voice' in sys.argv:
-        run_voice_mode(orchestrator, tts=tts)
+        run_voice_mode(orchestrator, tts=None)
     else:
         run_text_mode(orchestrator)
 

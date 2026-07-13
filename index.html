@@ -377,6 +377,14 @@
           <div class="status-label">Microphone</div>
           <div class="status-value" id="mic-pill">ACTIVE</div>
         </div>
+        <div class="status-card" id="cpu-card">
+          <div class="status-label">CPU</div>
+          <div class="status-value" id="cpu-val">0%</div>
+        </div>
+        <div class="status-card" id="ram-card">
+          <div class="status-label">RAM</div>
+          <div class="status-value" id="ram-val">0%</div>
+        </div>
         <div class="status-card">
           <div class="status-label">Commands</div>
           <div class="status-value" id="cmd-count">0</div>
@@ -387,20 +395,21 @@
         </div>
       </div>
 
-      <!-- User Input -->
-      <div class="response-section">
-        <div class="response-label">You Said</div>
-        <div class="response-box">
-          <div class="response-text placeholder" id="user-text">Awaiting your voice command...</div>
+      <!-- Chat Interface -->
+      <div class="chat-section">
+        <div class="response-label">Conversation Log</div>
+        <div class="chat-container" id="chat-container">
+          <div class="chat-message jarvis-message">
+            <div class="message-sender">JARVIS</div>
+            <div class="message-content">Hello! I'm JARVIS, your intelligent AI assistant. How can I help you today?</div>
+          </div>
         </div>
       </div>
 
-      <!-- JARVIS Response -->
-      <div class="response-section">
-        <div class="response-label">JARVIS Response</div>
-        <div class="response-box active">
-          <div class="response-text" id="jarvis-text">Hello! I'm JARVIS, your intelligent AI assistant. How can I help you today?</div>
-        </div>
+      <!-- Command Input Bar -->
+      <div class="command-input-container">
+        <input type="text" id="command-text-input" placeholder="Type a command and press Enter..." />
+        <button class="btn-send" id="send-command-btn">➡️</button>
       </div>
 
       <!-- Control Buttons -->

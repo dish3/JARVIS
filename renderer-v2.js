@@ -18,13 +18,16 @@
 
   // ── DOM refs ──────────────────────────────────────────────────────────────
 
-  const userText    = document.getElementById('user-text');
-  const jarvisText  = document.getElementById('jarvis-text');
-  const statusPill  = document.getElementById('status-pill');
-  const micPill     = document.getElementById('mic-pill');
-  const cmdCount    = document.getElementById('cmd-count');
-  const startBtn    = document.getElementById('start-listening');
-  const stopBtn     = document.getElementById('stop-listening');
+  const chatContainer     = document.getElementById('chat-container');
+  const commandTextInput  = document.getElementById('command-text-input');
+  const sendCommandBtn    = document.getElementById('send-command-btn');
+  const cpuVal            = document.getElementById('cpu-val');
+  const ramVal            = document.getElementById('ram-val');
+  const statusPill        = document.getElementById('status-pill');
+  const micPill           = document.getElementById('mic-pill');
+  const cmdCount          = document.getElementById('cmd-count');
+  const startBtn          = document.getElementById('start-listening');
+  const stopBtn           = document.getElementById('stop-listening');
 
   // ── State ─────────────────────────────────────────────────────────────────
 
@@ -62,19 +65,56 @@
     }
   }
 
-  function showUserText(text) {
-    if (!userText) return;
-    userText.textContent = text;
-    userText.classList.remove('placeholder');
-    const box = userText.closest('.response-box');
-    if (box) box.classList.add('active');
+  function escapeHTML(text) {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
   }
 
-  function showJarvisText(text) {
-    if (!jarvisText) return;
-    jarvisText.textContent = text;
-    const box = jarvisText.closest('.response-box');
-    if (box) box.classList.add('active');
+  function formatMarkdown(text) {
+    const parts = text.split('```');
+    return parts.map((part, index) => {
+      if (index % 2 === 1) {
+        const firstNewline = part.indexOf('\n');
+        let code = part;
+        if (firstNewline !== -1) {
+          code = part.substring(firstNewline + 1);
+        }
+        return `<pre><code>${escapeHTML(code.trim())}</code></pre>`;
+      } else {
+        let formatted = escapeHTML(part);
+        formatted = formatted.replace(/`([^`]+)`/g, '<code>$1</code>');
+        formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        formatted = formatted.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+        formatted = formatted.replace(/\n/g, '<br>');
+        return formatted;
+      }
+    }).join('');
+  }
+
+  function appendChatMessage(sender, text) {
+    if (!chatContainer || !text) return;
+    
+    const msgDiv = document.createElement('div');
+    msgDiv.className = `chat-message ${sender}-message`;
+    
+    const senderDiv = document.createElement('div');
+    senderDiv.className = 'message-sender';
+    senderDiv.textContent = sender.toUpperCase();
+    
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'message-content';
+    contentDiv.innerHTML = sender === 'system' ? text : formatMarkdown(text);
+    
+    msgDiv.appendChild(senderDiv);
+    msgDiv.appendChild(contentDiv);
+    chatContainer.appendChild(msgDiv);
+    
+    // Auto scroll to bottom
+    chatContainer.scrollTop = chatContainer.scrollHeight;
   }
 
   function incrementCommands() {
@@ -108,40 +148,38 @@
       case 'server_ready':
         serverReady = true;
         setStatus('READY', true);
-        showJarvisText('JARVIS is online. Press Start Listening or type a command.');
+        appendChatMessage('jarvis', 'JARVIS is online. Press Start Listening or type a command.');
         console.log('[RENDERER] Python server ready');
         break;
 
       case 'voice':
         setStatus('LISTENING', true);
         setListeningState(true);
-        showJarvisText(event.message);
+        appendChatMessage('system', `Voice status: ${event.message}`);
         console.log(`[VOICE] ${event.message}`);
         break;
 
       case 'transcription':
         // Real transcribed text from microphone
-        showUserText(event.text);
+        appendChatMessage('user', event.text);
         setStatus('PROCESSING', true);
         setListeningState(false);
         console.log(`[TRANSCRIPTION] ${event.text}`);
         break;
 
       case 'router':
-        // Show which tool Python is routing to
-        showJarvisText(`Routing: ${event.message}`);
+        appendChatMessage('system', `Routing directive: ${event.message}`);
         console.log(`[ROUTER] ${event.message}`);
         break;
 
       case 'task_started':
         setStatus('RUNNING', true);
-        showJarvisText(`Starting: ${event.goal}`);
+        appendChatMessage('system', `Executing: ${event.goal}`);
         console.log(`[TASK STARTED] ${event.goal}`);
         break;
 
       case 'task_running':
         setStatus('RUNNING', true);
-        showJarvisText('Processing...');
         break;
 
       case 'task_complete':
@@ -150,13 +188,9 @@
         incrementCommands();
 
         if (event.success) {
-          // Trim to first 200 chars for display — full result in console
-          const display = event.result.length > 200
-            ? event.result.substring(0, 200) + '...'
-            : event.result;
-          showJarvisText(display);
+          appendChatMessage('jarvis', event.result);
         } else {
-          showJarvisText(`Error: ${event.result}`);
+          appendChatMessage('system', `Execution Error: ${event.result}`);
         }
 
         console.log(`[TASK COMPLETE] [${event.success ? 'OK' : 'FAIL'}] [${event.tool}] ${event.result}`);
@@ -164,16 +198,54 @@
     }
   }
 
+  // ── Text Command Submission ────────────────────────────────────────────────
+
+  function submitTextCommand() {
+    if (!commandTextInput) return;
+    const goal = commandTextInput.value.trim();
+    if (!goal) return;
+
+    if (!window.jarvis) {
+      appendChatMessage('system', 'Error: Not running inside Electron. Use python main.py instead.');
+      return;
+    }
+
+    if (!serverReady) {
+      appendChatMessage('system', 'Python backend is still starting up. Please wait...');
+      return;
+    }
+
+    // Append user message locally
+    appendChatMessage('user', goal);
+    commandTextInput.value = '';
+
+    setStatus('PROCESSING', true);
+    console.log(`[RENDERER] Sending goal: ${goal}`);
+    window.jarvis.sendGoal(goal);
+  }
+
+  if (sendCommandBtn) {
+    sendCommandBtn.addEventListener('click', submitTextCommand);
+  }
+
+  if (commandTextInput) {
+    commandTextInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        submitTextCommand();
+      }
+    });
+  }
+
   // ── Button handlers ───────────────────────────────────────────────────────
 
   if (startBtn) {
     startBtn.addEventListener('click', () => {
       if (!window.jarvis) {
-        showJarvisText('Error: Not running inside Electron. Use python main.py --voice instead.');
+        appendChatMessage('system', 'Error: Not running inside Electron. Use python main.py --voice instead.');
         return;
       }
       if (!serverReady) {
-        showJarvisText('Python backend is still starting up. Please wait...');
+        appendChatMessage('system', 'Python backend is still starting up. Please wait...');
         return;
       }
       if (isListening) return;
@@ -181,7 +253,7 @@
       console.log('[RENDERER] Start Listening clicked');
       setListeningState(true);
       setStatus('LISTENING', true);
-      showJarvisText('Listening... speak your command now.');
+      appendChatMessage('system', 'Listening... speak your command now.');
 
       // Send __VOICE__ to Python — triggers one listen_ptt() cycle
       window.jarvis.startVoice();
@@ -194,50 +266,56 @@
       console.log('[RENDERER] Stop clicked');
       setListeningState(false);
       setStatus('READY', true);
-      showJarvisText('Stopped. Press Start Listening to continue.');
+      appendChatMessage('system', 'Stopped. Ready for new command.');
       window.jarvis.stopVoice();
     });
   }
 
-  // ── Text input (Enter key on any focused input) ───────────────────────────
-  // Allows typing commands directly in the UI without voice
+  // ── Keyboard shortcuts ─────────────────────────────────────────────────────
 
   document.addEventListener('keydown', (e) => {
-    // Only handle if no input/textarea is focused (avoid double-firing)
     const tag = document.activeElement ? document.activeElement.tagName : '';
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
-    // Press T to open a quick text prompt
-    if (e.key === 't' || e.key === 'T') {
-      const goal = window.prompt('Enter command:');
-      if (goal && goal.trim() && window.jarvis) {
-        showUserText(goal.trim());
-        setStatus('PROCESSING', true);
-
-        // Log route before sending
-        console.log(`[RENDERER] Sending goal: ${goal.trim()}`);
-        window.jarvis.sendGoal(goal.trim());
+    // Focus command text input on any alphanumeric keypress
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (commandTextInput) {
+        commandTextInput.focus();
       }
     }
   });
 
-  // ── Register Python output listener ──────────────────────────────────────
+  // ── Register Python listeners & Stats ──────────────────────────────────────
 
   if (window.jarvis) {
     window.jarvis.onOutput(handlePyLine);
     console.log('[RENDERER] Listening for Python output via IPC');
+
+    // Handle incoming system metrics
+    window.jarvis.onStats((stats) => {
+      if (cpuVal) {
+        cpuVal.textContent = `${stats.cpu}%`;
+        const card = cpuVal.closest('.status-card');
+        if (card) card.classList.toggle('active', stats.cpu > 10);
+      }
+      if (ramVal) {
+        ramVal.textContent = `${stats.ram.percentage}% (${stats.ram.usedGB}/${stats.ram.totalGB} GB)`;
+        const card = ramVal.closest('.status-card');
+        if (card) card.classList.toggle('active', true);
+      }
+    });
+    console.log('[RENDERER] Listening for system metrics via IPC');
   } else {
-    // Running in a plain browser (not Electron) — show a warning
     console.warn('[RENDERER] window.jarvis not available. Run via: npm start');
     setStatus('NO BACKEND', false);
-    showJarvisText('Open this app via "npm start" to connect to the Python backend.');
+    appendChatMessage('system', 'Open this app via "npm start" to connect to the Python backend.');
   }
 
   // ── Initial state ─────────────────────────────────────────────────────────
 
   setStatus('STARTING', false);
   setListeningState(false);
-  showJarvisText('Connecting to Python backend...');
+  appendChatMessage('system', 'Connecting to Python backend...');
 
   console.log('[RENDERER] renderer-v2.js loaded');
 
