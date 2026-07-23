@@ -80,10 +80,11 @@ class LinkedInTool:
             if self._is_session_expired(page):
                 self._log("[LINKEDIN] Session expired or not logged in — re-logging in")
                 context = browser.contexts[0]
-                if not self._login(page, email, password):
+                login_success, failure_reason = self._login(page, email, password)
+                if not login_success:
                     self._screenshot(page, 'login_failed')
                     browser.close()
-                    return self._make_result("failed", self.STATE_UNKNOWN, "Error: LinkedIn login failed.")
+                    return self._make_result("failed", self.STATE_UNKNOWN, failure_reason)
                 context.storage_state(path=str(SESSION_FILE))
                 self._log("[LINKEDIN] Session saved after fresh login")
 
@@ -114,9 +115,12 @@ class LinkedInTool:
                 return self._make_result("failed", self.STATE_UNKNOWN, browser)
 
             if self._is_session_expired(page):
+                curr_url = page.url
+                curr_title = page.title()
+                self._log(f"[LINKEDIN] Session expired — URL: {curr_url} | Title: '{curr_title}'")
                 self._screenshot(page, 'session_expired')
                 browser.close()
-                return self._make_result("failed", self.STATE_UNKNOWN, "Error: LinkedIn session expired.")
+                return self._make_result("failed", self.STATE_UNKNOWN, f"Error: LinkedIn session expired. Current URL: {curr_url} | Title: '{curr_title}'")
 
             result_str = self._delete_most_recent_post(page, browser)
             status = "success" if not result_str.startswith("Error:") else "failed"
@@ -126,14 +130,16 @@ class LinkedInTool:
 
     def _is_session_expired(self, page) -> bool:
         url = page.url.lower()
-        expired_signals = ('login', 'authwall', 'session-expired', 'uas/authenticate')
+        title = page.title()
+        self._log(f"[LINKEDIN] Checking session status — Current URL: {page.url} | Title: '{title}'")
+        expired_signals = ('login', 'authwall', 'session-expired', 'uas/authenticate', 'sign-in')
         if any(s in url for s in expired_signals):
-            self._log(f"[LINKEDIN] Session expired — URL: {page.url}")
+            self._log(f"[LINKEDIN] Session expired — URL: {page.url} | Title: '{title}'")
             return True
 
         try:
             if page.locator('#username').is_visible(timeout=1500):
-                self._log("[LINKEDIN] Session expired — login form visible on page")
+                self._log(f"[LINKEDIN] Session expired — login form visible on page. Current URL: {page.url} | Title: '{title}'")
                 return True
         except Exception:
             pass
@@ -162,7 +168,7 @@ class LinkedInTool:
                     wait_until="domcontentloaded",
                     timeout=90000,
                 )
-                self._log(f"[LINKEDIN] Feed loaded — URL: {page.url}")
+                self._log(f"[LINKEDIN] Feed loaded — Current URL: {page.url} | Title: '{page.title()}'")
                 break
             except Exception as nav_err:
                 self._log(f"[LINKEDIN] Navigation attempt {attempt} failed: {nav_err}")
@@ -174,7 +180,13 @@ class LinkedInTool:
         time.sleep(5)
         return browser, page
 
-    def _login(self, page, email: str, password: str) -> bool:
+    def _login(self, page, email: str, password: str) -> tuple:
+        """
+        Navigates to login page, fills credentials, and submits.
+        Returns tuple (success: bool, failure_reason: str).
+        Performs full diagnostic checks (URL, title, failed selectors, failure types).
+        """
+        failed_selector = None
         try:
             self._log("[LINKEDIN] Navigating to login page...")
             page.goto(
@@ -183,18 +195,97 @@ class LinkedInTool:
                 timeout=90000,
             )
             time.sleep(2)
-            page.fill('#username', email)
-            page.fill('#password', password)
-            page.click('button[type="submit"]')
-            time.sleep(4)
-            if "feed" in page.url or "checkpoint" in page.url:
-                self._log("[LINKEDIN] Login successful")
-                return True
-            self._log(f"[LINKEDIN] Login failed — landed on: {page.url}")
-            return False
+
+            curr_url = page.url
+            curr_title = page.title()
+            self._log(f"[LINKEDIN] Login page loaded — Current URL: {curr_url} | Title: '{curr_title}'")
+
+            # Locate username input
+            username_selectors = ['#username', 'input[name="session_key"]', '#session_key']
+            user_el = self._find_visible(page, username_selectors, label="username input")
+            if not user_el:
+                failed_selector = '#username'
+                self._log(f"[LINKEDIN] Failed selector: {failed_selector}")
+                self._log(f"[LINKEDIN] Login failed due to selector failure — Current URL: {curr_url} | Title: '{curr_title}'")
+                self._screenshot(page, 'login_failed')
+                return False, f"Error: LinkedIn login failed due to selector failure ('{failed_selector}'). Current URL: {curr_url} | Title: '{curr_title}'"
+
+            user_el.fill(email)
+
+            # Locate password input
+            password_selectors = ['#password', 'input[name="session_password"]', '#session_password']
+            pass_el = self._find_visible(page, password_selectors, label="password input")
+            if not pass_el:
+                failed_selector = '#password'
+                self._log(f"[LINKEDIN] Failed selector: {failed_selector}")
+                self._log(f"[LINKEDIN] Login failed due to selector failure — Current URL: {curr_url} | Title: '{curr_title}'")
+                self._screenshot(page, 'login_failed')
+                return False, f"Error: LinkedIn login failed due to selector failure ('{failed_selector}'). Current URL: {curr_url} | Title: '{curr_title}'"
+
+            pass_el.fill(password)
+
+            # Locate submit button
+            submit_selectors = ['button[type="submit"]', 'button:has-text("Sign in")', 'button:has-text("Log in")']
+            sub_btn = self._find_visible(page, submit_selectors, label="submit button")
+            if not sub_btn:
+                failed_selector = 'button[type="submit"]'
+                self._log(f"[LINKEDIN] Failed selector: {failed_selector}")
+                self._log(f"[LINKEDIN] Login failed due to selector failure — Current URL: {curr_url} | Title: '{curr_title}'")
+                self._screenshot(page, 'login_failed')
+                return False, f"Error: LinkedIn login failed due to selector failure ('{failed_selector}'). Current URL: {curr_url} | Title: '{curr_title}'"
+
+            sub_btn.click()
+            time.sleep(5)
+
+            end_url = page.url.lower()
+            end_title = page.title()
+            self._log(f"[LINKEDIN] Post-login check — Current URL: {page.url} | Title: '{end_title}'")
+
+            # Check 1: Success (feed page loaded)
+            if "feed" in end_url:
+                self._log(f"[LINKEDIN] Login successful — Current URL: {page.url} | Title: '{end_title}'")
+                return True, "Login successful"
+
+            # Check 2: LinkedIn Verification Page (checkpoint / pin / captcha / challenge)
+            if any(k in end_url for k in ('checkpoint', 'challenge', 'captcha', 'pin', 'security-check', 'verification')) or any(k in end_title.lower() for k in ('verification', 'checkpoint', 'security', 'pin')):
+                reason = f"Error: LinkedIn requires security verification page. Current URL: {page.url} | Title: '{end_title}'"
+                self._log(f"[LINKEDIN] {reason}")
+                self._screenshot(page, 'login_failed')
+                return False, reason
+
+            # Check 3: Invalid Credentials
+            try:
+                err_msg = page.locator('#error-for-username, #error-for-password, .alert--error, [role="alert"]').first
+                if err_msg.is_visible(timeout=2000):
+                    err_text = err_msg.inner_text().strip().replace('\n', ' ')
+                    reason = f"Error: LinkedIn credentials invalid ({err_text}). Current URL: {page.url} | Title: '{end_title}'"
+                    self._log(f"[LINKEDIN] {reason}")
+                    self._screenshot(page, 'login_failed')
+                    return False, reason
+            except Exception:
+                pass
+
+            # Check 4: Session Expired / Authwall redirect
+            if any(k in end_url for k in ('login', 'authwall', 'session-expired', 'uas/authenticate', 'sign-in')):
+                reason = f"Error: LinkedIn session expired. Current URL: {page.url} | Title: '{end_title}'"
+                self._log(f"[LINKEDIN] {reason}")
+                self._screenshot(page, 'login_failed')
+                return False, reason
+
+            # Generic failure reporting
+            reason = f"Error: LinkedIn login failed. Current URL: {page.url} | Title: '{end_title}'"
+            self._log(f"[LINKEDIN] {reason}")
+            self._screenshot(page, 'login_failed')
+            return False, reason
+
         except Exception as e:
-            self._log(f"[LINKEDIN] Login error: {e}")
-            return False
+            curr_url = page.url if page else 'unknown'
+            curr_title = page.title() if page else 'unknown'
+            reason = f"Error: LinkedIn login failed ({str(e)}). Current URL: {curr_url} | Title: '{curr_title}'"
+            self._log(f"[LINKEDIN] {reason}")
+            if page:
+                self._screenshot(page, 'login_failed')
+            return False, reason
 
     # ── Core: create post ──────────────────────────────────────────────────────
 
