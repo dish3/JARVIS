@@ -259,6 +259,18 @@ class Router:
                 if len(groups) > 1 and groups[1]:
                     params['image_path'] = groups[1].strip()
                     logger.info(f"[LINKEDIN] Image path: {params['image_path']}")
+                
+                # Check if text is a topic request (e.g. "about ...", "something about ...")
+                raw_text = params['text'].lower()
+                topic_triggers = ('about ', 'on ', 'regarding ', 'for ', 'something ', 'a post ', 'content ')
+                if any(raw_text.startswith(t) for t in topic_triggers) or 'something' in raw_text or raw_text.startswith('you'):
+                    logger.info("[ROUTE] LinkedIn topic generation prompt detected — delegating to planner")
+                    return {
+                        'is_command': False,
+                        'needs_planner': True,
+                        'confidence': 0.0,
+                    }
+
                 return {
                     'is_command': True,
                     'command_type': 'linkedin',
