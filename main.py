@@ -167,17 +167,16 @@ def _drain_queue(tts=None) -> None:
             tag, payload = _result_queue.get_nowait()
             _emit(tag, payload)
 
-            # Speak result in voice mode — only on completion, max 2 sentences
+            # Speak result in voice mode — speak on completion (success or error), max 2 sentences
             if tts and tag == '[TASK COMPLETE]':
                 result = payload
                 text = result.get('result', '')
-                if text and result.get('success'):
+                if text:
                     sentences = [s.strip() for s in text.replace('\n', ' ').split('.') if s.strip()]
                     spoken = '. '.join(sentences[:2])
                     if spoken:
-                        time.sleep(0.5)
+                        time.sleep(0.3)
                         tts.speak(spoken)
-                        time.sleep(0.5)
         except queue.Empty:
             break
 

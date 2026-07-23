@@ -117,6 +117,23 @@
     chatContainer.scrollTop = chatContainer.scrollHeight;
   }
 
+  function speakText(text) {
+    if (!text || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    try {
+      window.speechSynthesis.cancel();
+      const clean = text.replace(/[*#`_~]/g, '').replace(/\[.*?\]/g, '').replace(/\n+/g, ' ');
+      const sentences = clean.split(/(?<=[.!?])\s+/).filter(Boolean);
+      const spokenText = sentences.slice(0, 2).join(' ');
+      if (!spokenText) return;
+      const utterance = new SpeechSynthesisUtterance(spokenText);
+      utterance.rate = 1.0;
+      utterance.pitch = 1.0;
+      window.speechSynthesis.speak(utterance);
+    } catch (err) {
+      console.warn('[TTS] Speech synthesis error:', err);
+    }
+  }
+
   function incrementCommands() {
     commandsRun++;
     if (cmdCount) cmdCount.textContent = commandsRun;
@@ -149,6 +166,7 @@
         serverReady = true;
         setStatus('READY', true);
         appendChatMessage('jarvis', 'JARVIS is online. Press Start Listening or type a command.');
+        speakText('JARVIS is online.');
         console.log('[RENDERER] Python server ready');
         break;
 
@@ -189,8 +207,10 @@
 
         if (event.success) {
           appendChatMessage('jarvis', event.result);
+          speakText(event.result);
         } else {
           appendChatMessage('system', `Execution Error: ${event.result}`);
+          speakText(`Error: ${event.result}`);
         }
 
         console.log(`[TASK COMPLETE] [${event.success ? 'OK' : 'FAIL'}] [${event.tool}] ${event.result}`);
