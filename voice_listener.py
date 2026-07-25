@@ -5,8 +5,12 @@ Captures audio and transcribes to text
 """
 
 import logging
+import os
 import numpy as np
 from typing import Optional, Callable
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = logging.getLogger('VOICE_LISTENER')
 
@@ -48,16 +52,63 @@ class VoiceListener:
             return None
         
         try:
+            # 1. Read config values
+            lang_mode = os.getenv("VOICE_LANGUAGE_MODE", "english").lower()
+            diagnostic_mode = os.getenv("VOICE_DIAGNOSTIC", "false").lower() == "true"
+            confidence_threshold = float(os.getenv("VOICE_CONFIDENCE_THRESHOLD", "0.7"))
+            
+            # 2. Gate transcription language call on flag
+            whisper_lang = "en" if lang_mode == "english" else None
+            
             # Use language detection and beam search for better accuracy
             segments, info = self.model.transcribe(
                 audio_path, 
-                language=None,
+                language=whisper_lang,
                 beam_size=5,
                 best_of=5
             )
             
-            # Combine all segments
-            text = " ".join([segment.text for segment in segments])
+            segment_list = list(segments)
+            text = " ".join([segment.text for segment in segment_list])
+            
+            # Compute confidence score from avg_logprob of segments
+            if segment_list:
+                avg_lp = sum(s.avg_logprob for s in segment_list) / len(segment_list)
+                import math
+                confidence = math.exp(avg_lp)
+            else:
+                avg_lp = 0.0
+                confidence = 0.0
+                
+            detected_lang = info.language if info else "unknown"
+            lang_prob = info.language_probability if info else 0.0
+            
+            # 3. Log on every transcription detected lang, avg_logprob and raw transcript text
+            logger.info(f"[VOICE] Transcription completed:")
+            logger.info(f"  - Detected Language: {detected_lang} (prob: {lang_prob:.4f})")
+            logger.info(f"  - avg_logprob: {avg_lp:.4f} (confidence: {confidence:.4f})")
+            logger.info(f"  - Raw text: {text!r}")
+            
+            # 5. Diagnostic-only mode check
+            if diagnostic_mode:
+                logger.info(f"[VOICE] [DIAGNOSTIC] Skipping router/planner. Raw transcript: {text!r}")
+                print(f"[JARVIS] STT Diagnostic: Detected: {text}", flush=True)
+                print(f"[TASK COMPLETE] [OK] [none] [DIAGNOSTIC] Heard: {text}", flush=True)
+                return None
+            
+            # 4. Confidence threshold check
+            if confidence < confidence_threshold:
+                logger.warning(f"[VOICE] Transcription confidence ({confidence:.4f}, avg_logprob: {avg_lp:.4f}) below threshold ({confidence_threshold})")
+                print("[JARVIS] Sorry, I didn't catch that clearly, can you repeat?", flush=True)
+                print("[TASK COMPLETE] [OK] [none] Sorry, I didn't catch that clearly, can you repeat?", flush=True)
+                
+                try:
+                    from voice_output import VoiceOutput
+                    VO = VoiceOutput()
+                    VO.speak("Sorry, I didn't catch that clearly, can you repeat?")
+                except Exception as tts_err:
+                    logger.warning(f"[VOICE] Failed to speak fallback error: {tts_err}")
+                return None
             
             if not text or not text.strip():
                 logger.warning("[VOICE] No speech detected in audio")
@@ -96,12 +147,8 @@ class VoiceListener:
                 temp_path = f.name
             
             try:
-                # Transcribe
-                segments, info = self.model.transcribe(temp_path, language=None)
-                text = " ".join([segment.text for segment in segments])
-                
-                logger.info(f"[VOICE] Transcribed: {text[:100]}...")
-                return text
+                # Transcribe using our primary method to ensure all rules/filters apply
+                return self.transcribe_audio(temp_path)
             finally:
                 # Clean up temp file
                 if os.path.exists(temp_path):
