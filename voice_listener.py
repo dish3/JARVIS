@@ -51,7 +51,7 @@ class VoiceListener:
             # Use language detection and beam search for better accuracy
             segments, info = self.model.transcribe(
                 audio_path, 
-                language="en",
+                language=None,
                 beam_size=5,
                 best_of=5
             )
@@ -97,7 +97,7 @@ class VoiceListener:
             
             try:
                 # Transcribe
-                segments, info = self.model.transcribe(temp_path, language="en")
+                segments, info = self.model.transcribe(temp_path, language=None)
                 text = " ".join([segment.text for segment in segments])
                 
                 logger.info(f"[VOICE] Transcribed: {text[:100]}...")
@@ -141,77 +141,249 @@ def _get_voice_listener():
     return _voice_listener
 
 
-def listen_ptt(hotkey: str = "F9") -> Optional[str]:
+def _select_mic_device() -> int | None:
+    """
+    Enumerate available input devices and return the best one to use.
+
+    Priority order:
+      1. Default system input device (sounddevice.default.device[0])
+      2. First device whose name contains 'microphone' or 'mic' (case-insensitive)
+      3. First device with at least 1 input channel
+      4. None  → sounddevice will use its own default (same as not passing device=)
+
+    Logs every candidate and the final selection with [MIC DEVICE] tag.
+    Never raises — all errors return None so recording still proceeds.
+    """
+    try:
+        import sounddevice as sd
+
+        devices = sd.query_devices()
+        default_input_idx = sd.default.device[0]  # may be -1 if unset
+
+        logger.info("[MIC DEVICE] Available input devices:")
+        input_devices = []
+        for idx, dev in enumerate(devices):
+            if dev['max_input_channels'] > 0:
+                marker = ' <-- default' if idx == default_input_idx else ''
+                logger.info(
+                    f"[MIC DEVICE]   [{idx}] {dev['name']} "
+                    f"(channels={dev['max_input_channels']}){marker}"
+                )
+                input_devices.append((idx, dev))
+
+        if not input_devices:
+            logger.warning("[MIC DEVICE] No input devices found — using sounddevice default")
+            return None
+
+        # 1. Use system default if it is a valid input device
+        if default_input_idx >= 0:
+            default_dev = devices[default_input_idx]
+            if default_dev['max_input_channels'] > 0:
+                logger.info(
+                    f"[MIC DEVICE] Selected default system mic: "
+                    f"[{default_input_idx}] {default_dev['name']}"
+                )
+                return default_input_idx
+
+        # 2. Prefer a device whose name contains 'microphone' or 'mic'
+        for idx, dev in input_devices:
+            name_lower = dev['name'].lower()
+            if 'microphone' in name_lower or 'mic' in name_lower:
+                logger.info(
+                    f"[MIC DEVICE] Selected by name match: [{idx}] {dev['name']}"
+                )
+                return idx
+
+        # 3. Fall back to first available input device
+        idx, dev = input_devices[0]
+        logger.info(
+            f"[MIC DEVICE] Fallback to first input device: [{idx}] {dev['name']}"
+        )
+        return idx
+
+    except Exception as e:
+        logger.warning(f"[MIC DEVICE] Device enumeration failed: {e} — using sounddevice default")
+        return None
+
+
+# Defer mic device resolution to run on the active recording thread
+_mic_device = None
+
+
+def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -> Optional[str]:
     """Push-to-talk: hold hotkey to record, release to transcribe.
     Uses module-level VoiceListener to avoid reloading model.
-    Returns transcribed text or None."""
-    import keyboard
+    Returns transcribed text or None.
+
+    Fallback/Server Mode: if use_keyboard is False or hooks are unavailable,
+    records immediately and auto-stops on silence (VAD) or stop_event trigger.
+    """
+    import sys
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            ctypes.windll.ole32.CoInitialize(None)
+        except Exception as com_err:
+            logger.warning(f"[VOICE] CoInitialize failed: {com_err}")
+
+    global _mic_device
+    if _mic_device is None:
+        _mic_device = _select_mic_device()
+
     import sounddevice as sd
     import numpy as np
     import tempfile
     import os
     import soundfile as sf
-    
+
     SAMPLE_RATE = 16000
-    
-    # Use module-level listener (model loaded once)
     listener = _get_voice_listener()
-    print(f"[JARVIS] Hold {hotkey} to speak. Release to process.")
+
+    if use_keyboard:
+        logger.info(f"[VOICE] Waiting for {hotkey} (use_keyboard={use_keyboard})")
+        print(f"[JARVIS] Hold {hotkey} to speak. Release to process.")
+    else:
+        logger.info("[VOICE] Microphone active")
     frames = []
-    
+
     def audio_callback(indata, frame_count, time_info, status):
         if status:
             logger.warning(f"[VOICE] Audio callback status: {status}")
         frames.append(indata.copy())
-    
+
+    # ── Try keyboard hotkey mode ───────────────────────────────────────────────
+    keyboard_available = False
+    if use_keyboard:
+        try:
+            import keyboard
+            keyboard_available = True
+        except Exception as kb_err:
+            logger.warning(f"[VOICE] keyboard module unavailable: {kb_err} — using timed fallback")
+
     try:
-        # Wait for key press
-        keyboard.wait(hotkey)
-        print("[JARVIS] Listening...")
-        frames.clear()
-        
-        # Record while key is held
-        with sd.InputStream(samplerate=SAMPLE_RATE,
-                           channels=1,
-                           dtype='float32',
-                           device=1,
-                           callback=audio_callback,
-                           blocksize=4096):
-            while keyboard.is_pressed(hotkey):
-                sd.sleep(50)
-        
+        if keyboard_available:
+            # Wait for hotkey press
+            keyboard.wait(hotkey)
+            logger.info(f"[VOICE] F9 detected")
+            logger.info(f"[VOICE] Recording started — device={_mic_device}")
+            print("[JARVIS] Listening...")
+            frames.clear()
+
+            with sd.InputStream(samplerate=SAMPLE_RATE,
+                               channels=1,
+                               dtype='float32',
+                               device=_mic_device,
+                               callback=audio_callback,
+                               blocksize=4096):
+                while keyboard.is_pressed(hotkey):
+                    if stop_event and stop_event.is_set():
+                        break
+                    sd.sleep(50)
+
+            logger.info("[VOICE] Recording stopped")
+        else:
+            # Fallback: record with silence-based auto-stop (Voice Activity Detection)
+            logger.info("[VOICE] Recording started — silence-based auto-stop fallback")
+            print("[JARVIS] Listening... (will auto-stop after 1.5s of silence)")
+            frames.clear()
+
+            with sd.InputStream(samplerate=SAMPLE_RATE,
+                               channels=1,
+                               dtype='float32',
+                               device=_mic_device,
+                               callback=audio_callback,
+                               blocksize=4096):
+                
+                has_spoken = False
+                silence_threshold = 0.003
+                initial_silence_limit = 4.0  # 4 seconds to start speaking
+                active_silence_limit = 1.5   # 1.5 seconds of silence to stop after speaking
+                max_duration = 15.0  # seconds
+                
+                chunk_duration = 4096 / SAMPLE_RATE
+                max_chunks = int(max_duration / chunk_duration)
+                
+                silence_count = 0
+                chunks_recorded = 0
+                
+                while chunks_recorded < max_chunks:
+                    if stop_event and stop_event.is_set():
+                        logger.info("[VOICE] Stop event detected — stopping recording")
+                        break
+                        
+                    sd.sleep(int(chunk_duration * 1000))
+                    chunks_recorded = len(frames)
+                    
+                    if len(frames) > 0:
+                        # Check last frame's root-mean-square (RMS) energy
+                        last_frame = frames[-1].flatten()
+                        rms = np.sqrt(np.mean(last_frame ** 2)) if len(last_frame) > 0 else 0
+                        if rms >= silence_threshold:
+                            has_spoken = True
+                            silence_count = 0
+                        else:
+                            silence_count += 1
+                            
+                    limit = active_silence_limit if has_spoken else initial_silence_limit
+                    chunks_needed = int(limit / chunk_duration)
+                    
+                    if silence_count >= chunks_needed:
+                        logger.info(f"[VOICE] Silence detected ({limit}s) — auto-stopping")
+                        break
+                        
+            logger.info("[VOICE] Recording stopped (auto-stop)")
+
         print("[JARVIS] Transcribing...")
+
         if not frames:
             logger.warning("[VOICE] No audio frames captured")
             return None
-        
+
         # Convert to numpy array
         audio = np.concatenate(frames, axis=0).flatten()
-        
+        logger.info(f"[VOICE] Audio captured — {len(audio)} samples, duration={len(audio)/SAMPLE_RATE:.1f}s")
+
         # Check if audio has sufficient volume (not just silence)
         rms = np.sqrt(np.mean(audio ** 2))
+        logger.info(f"[VOICE] RMS level: {rms:.4f} (threshold=0.003)")
         if rms < 0.003:
             logger.warning(f"[VOICE] Audio too quiet (RMS: {rms:.4f}), likely silence")
             print("[JARVIS] No speech detected. Try speaking louder.")
             return None
-        
-        # Save to temp file and use existing transcribe method
+
+        # Save to temp file and transcribe
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
             temp_path = f.name
             sf.write(temp_path, audio, SAMPLE_RATE)
-        
+
         try:
-            result = listener.transcribe_audio(temp_path)
-            if result:
-                print(f"[JARVIS] Heard: {result}")
-                return result
-            else:
+            raw = listener.transcribe_audio(temp_path)
+            if not raw or not raw.strip():
+                logger.warning("[TRANSCRIPTION] Empty result from Whisper")
                 print("[JARVIS] Could not understand. Try again.")
                 return None
+
+            # Normalize: strip, lowercase, remove leading/trailing punctuation, collapse whitespace
+            import string
+            result = raw.strip()
+            result_lower = result.lower().strip(string.punctuation + ' ')
+            result_normalized = ' '.join(result_lower.split())
+            logger.info(f"[TRANSCRIPTION] raw={result!r}")
+            logger.info(f"[TRANSCRIPTION] normalized={result_normalized!r}")
+            logger.info(f"[VOICE] Sending to router: {result_normalized!r}")
+            print(f"[JARVIS] Heard: {result_normalized}")
+            return result_normalized
+
         finally:
             if os.path.exists(temp_path):
-                os.remove(temp_path)
-    
+                os.unlink(temp_path)
+            if sys.platform == 'win32':
+                try:
+                    import ctypes
+                    ctypes.windll.ole32.CoUninitialize()
+                except:
+                    pass
+
     except Exception as e:
         logger.error(f"[VOICE] Voice error: {e}")
         print(f"[JARVIS] Voice error: {e}")
