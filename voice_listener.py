@@ -10,7 +10,7 @@ import numpy as np
 from typing import Optional, Callable
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 logger = logging.getLogger('VOICE_LISTENER')
 
@@ -26,6 +26,10 @@ class VoiceListener:
             model_size: Faster-Whisper model size (tiny, base, small, medium, large)
         """
         logger.info(f"Initializing Voice Listener (model: {model_size})...")
+        
+        # Load and log resolved confidence threshold on startup
+        confidence_threshold = float(os.getenv("VOICE_CONFIDENCE_THRESHOLD", "0.4"))
+        logger.info(f"[CONFIG] VOICE_CONFIDENCE_THRESHOLD resolved to: {confidence_threshold}")
         
         try:
             from faster_whisper import WhisperModel
@@ -55,7 +59,7 @@ class VoiceListener:
             # 1. Read config values
             lang_mode = os.getenv("VOICE_LANGUAGE_MODE", "english").lower()
             diagnostic_mode = os.getenv("VOICE_DIAGNOSTIC", "false").lower() == "true"
-            confidence_threshold = float(os.getenv("VOICE_CONFIDENCE_THRESHOLD", "0.7"))
+            confidence_threshold = float(os.getenv("VOICE_CONFIDENCE_THRESHOLD", "0.4"))
             
             # 2. Gate transcription language call on flag
             whisper_lang = "en" if lang_mode == "english" else None

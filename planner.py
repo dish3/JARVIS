@@ -17,7 +17,7 @@ import re
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 logger = logging.getLogger('PLANNER')
 

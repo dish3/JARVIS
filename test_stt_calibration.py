@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
 logger = logging.getLogger('CALIBRATION')
 
-load_dotenv()
+load_dotenv(override=True)
 
 # Force VOICE_DIAGNOSTIC=false to run actual threshold logic
 os.environ["VOICE_DIAGNOSTIC"] = "false"
