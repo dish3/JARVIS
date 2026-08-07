@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
 """
-Voice Listener - Speech-to-Text using Faster-Whisper
-Captures audio and transcribes to text
+Voice Listener - Entry point interface for voice pipeline
+Maintains backwards compatibility with existing callers.
+Delegates to the decoupled `voice` package modules.
 """
 
-import logging
 import os
-import numpy as np
+import sys
+import logging
 from typing import Optional, Callable
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
-
 logger = logging.getLogger('VOICE_LISTENER')
 
+# Import package modules
+from voice.normalizer import normalize_text
+from voice.utils import save_debug_wav, calculate_audio_stats
+from voice.audio_capture import select_mic_device, list_input_devices
+from voice.vad import VADDetector
+from voice.stt import STTTranscriber
 
 class VoiceListener:
     """Capture and transcribe voice input"""
@@ -21,167 +27,86 @@ class VoiceListener:
     def __init__(self, model_size: str = 'base'):
         """
         Initialize voice listener
-        
-        Args:
-            model_size: Faster-Whisper model size (tiny, base, small, medium, large)
         """
-        logger.info(f"Initializing Voice Listener (model: {model_size})...")
+        logger.info(f"[VOICE] Whisper model: {model_size}")
+        self.transcriber = STTTranscriber(model_size)
         
-        # Load and log resolved confidence threshold on startup
-        confidence_threshold = float(os.getenv("VOICE_CONFIDENCE_THRESHOLD", "0.4"))
-        logger.info(f"[CONFIG] VOICE_CONFIDENCE_THRESHOLD resolved to: {confidence_threshold}")
-        
-        try:
-            from faster_whisper import WhisperModel
-            self.model = WhisperModel(model_size, device="cpu", compute_type="int8")
-            logger.info("[OK] Voice Listener initialized with Faster-Whisper")
-        except ImportError:
-            logger.warning("Faster-Whisper not installed. Install with: pip install faster-whisper")
-            self.model = None
-    
     def transcribe_audio(self, audio_path: str) -> Optional[str]:
         """
-        Transcribe audio file to text
+        Transcribe audio file to text.
+        Applies confidence gates and diagnostic checks.
         
         Args:
-            audio_path: Path to audio file
+            audio_path: Path to audio file.
             
         Returns:
-            Transcribed text or None if error
+            Transcribed text or None if error/rejected.
         """
-        logger.info(f"[VOICE] Transcribing: {audio_path}")
-        
-        if not self.model:
+        if not self.transcriber.model:
             logger.error("[VOICE] Model not initialized")
             return None
-        
-        try:
-            # 1. Read config values
-            lang_mode = os.getenv("VOICE_LANGUAGE_MODE", "english").lower()
-            diagnostic_mode = os.getenv("VOICE_DIAGNOSTIC", "false").lower() == "true"
-            confidence_threshold = float(os.getenv("VOICE_CONFIDENCE_THRESHOLD", "0.4"))
             
-            # 2. Gate transcription language call on flag
-            whisper_lang = "en" if lang_mode == "english" else None
-            
-            # Use language detection and beam search for better accuracy
-            segments, info = self.model.transcribe(
-                audio_path, 
-                language=whisper_lang,
-                beam_size=5,
-                best_of=5
-            )
-            
-            segment_list = list(segments)
-            text = " ".join([segment.text for segment in segment_list])
-            
-            # Compute confidence score from avg_logprob of segments
-            if segment_list:
-                avg_lp = sum(s.avg_logprob for s in segment_list) / len(segment_list)
-                import math
-                confidence = math.exp(avg_lp)
-            else:
-                avg_lp = 0.0
-                confidence = 0.0
-                
-            detected_lang = info.language if info else "unknown"
-            lang_prob = info.language_probability if info else 0.0
-            
-            # 3. Log on every transcription detected lang, avg_logprob and raw transcript text
-            logger.info(f"[VOICE] Transcription completed:")
-            logger.info(f"  - Detected Language: {detected_lang} (prob: {lang_prob:.4f})")
-            logger.info(f"  - avg_logprob: {avg_lp:.4f} (confidence: {confidence:.4f})")
-            logger.info(f"  - Raw text: {text!r}")
-            
-            # 5. Diagnostic-only mode check
-            if diagnostic_mode:
-                logger.info(f"[VOICE] [DIAGNOSTIC] Skipping router/planner. Raw transcript: {text!r}")
-                print(f"[JARVIS] STT Diagnostic: Detected: {text}", flush=True)
-                print(f"[TASK COMPLETE] [OK] [none] [DIAGNOSTIC] Heard: {text}", flush=True)
-                return None
-            
-            # 4. Confidence threshold check
-            if confidence < confidence_threshold:
-                logger.warning(f"[VOICE] Transcription confidence ({confidence:.4f}, avg_logprob: {avg_lp:.4f}) below threshold ({confidence_threshold})")
-                print("[JARVIS] Sorry, I didn't catch that clearly, can you repeat?", flush=True)
-                print("[TASK COMPLETE] [OK] [none] Sorry, I didn't catch that clearly, can you repeat?", flush=True)
-                
-                try:
-                    from voice_output import VoiceOutput
-                    VO = VoiceOutput()
-                    VO.speak("Sorry, I didn't catch that clearly, can you repeat?")
-                except Exception as tts_err:
-                    logger.warning(f"[VOICE] Failed to speak fallback error: {tts_err}")
-                return None
-            
-            if not text or not text.strip():
-                logger.warning("[VOICE] No speech detected in audio")
-                return None
-            
-            logger.info(f"[VOICE] Transcribed: {text[:100]}...")
-            return text
-        
-        except Exception as e:
-            logger.error(f"[VOICE] Transcription error: {str(e)}")
+        # Transcribe using our STT engine
+        res = self.transcriber.transcribe(audio_path)
+        if not res.get('success'):
             return None
-    
+            
+        text = res['text']
+        confidence = res['confidence']
+        avg_lp = res['avg_logprob']
+        detected_lang = res['detected_lang']
+        
+        # Read config gates
+        diagnostic_mode = os.getenv("VOICE_DIAGNOSTIC", "false").lower() == "true"
+        confidence_threshold = float(os.getenv("VOICE_CONFIDENCE_THRESHOLD", "0.4"))
+        
+        # STT Diagnostic-only mode check
+        if diagnostic_mode:
+            logger.info(f"[VOICE] [DIAGNOSTIC] Skipping router/planner. Raw transcript: {text!r}")
+            print(f"[JARVIS] STT Diagnostic: Detected: {text}", flush=True)
+            print(f"[TASK COMPLETE] [OK] [none] [DIAGNOSTIC] Heard: {text}", flush=True)
+            return None
+            
+        # Confidence threshold check
+        if confidence < confidence_threshold:
+            logger.warning(f"[VOICE] Transcription confidence ({confidence:.4f}, avg_logprob: {avg_lp:.4f}) below threshold ({confidence_threshold})")
+            print("[JARVIS] Sorry, I didn't catch that clearly, can you repeat?", flush=True)
+            print("[TASK COMPLETE] [OK] [none] Sorry, I didn't catch that clearly, can you repeat?", flush=True)
+            
+            try:
+                from voice_output import VoiceOutput
+                VO = VoiceOutput()
+                VO.speak("Sorry, I didn't catch that clearly, can you repeat?")
+            except Exception as tts_err:
+                logger.warning(f"[VOICE] Failed to speak fallback error: {tts_err}")
+            return None
+            
+        if not text or not text.strip():
+            logger.warning("[VOICE] No speech detected in audio")
+            return None
+            
+        return text
+
     def transcribe_bytes(self, audio_bytes: bytes) -> Optional[str]:
         """
         Transcribe audio from bytes
-        
-        Args:
-            audio_bytes: Audio data as bytes
-            
-        Returns:
-            Transcribed text or None if error
         """
-        logger.info("[VOICE] Transcribing from bytes...")
-        
-        if not self.model:
-            logger.error("[VOICE] Model not initialized")
-            return None
-        
+        import tempfile
         try:
-            import tempfile
-            import os
-            
-            # Write bytes to temporary file
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
                 f.write(audio_bytes)
                 temp_path = f.name
-            
             try:
-                # Transcribe using our primary method to ensure all rules/filters apply
                 return self.transcribe_audio(temp_path)
             finally:
-                # Clean up temp file
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
-        
         except Exception as e:
             logger.error(f"[VOICE] Transcription error: {str(e)}")
             return None
 
 
-def main():
-    """Test voice listener"""
-    listener = VoiceListener(model_size='base')
-    
-    # Test with a sample audio file if available
-    import os
-    if os.path.exists('sample_audio.wav'):
-        print("\n=== Test Transcription ===")
-        result = listener.transcribe_audio('sample_audio.wav')
-        print(f"Result: {result}")
-    else:
-        print("No sample audio file found. Create one to test.")
-
-
-if __name__ == '__main__':
-    main()
-
-
-# Module-level voice listener - initialized once to avoid reloading model
+# Module-level voice listener singleton
 _voice_listener = None
 
 def _get_voice_listener():
@@ -191,85 +116,21 @@ def _get_voice_listener():
         _voice_listener = VoiceListener(model_size='tiny')
     return _voice_listener
 
-
 def _select_mic_device() -> int | None:
-    """
-    Enumerate available input devices and return the best one to use.
-
-    Priority order:
-      1. Default system input device (sounddevice.default.device[0])
-      2. First device whose name contains 'microphone' or 'mic' (case-insensitive)
-      3. First device with at least 1 input channel
-      4. None  → sounddevice will use its own default (same as not passing device=)
-
-    Logs every candidate and the final selection with [MIC DEVICE] tag.
-    Never raises — all errors return None so recording still proceeds.
-    """
-    try:
-        import sounddevice as sd
-
-        devices = sd.query_devices()
-        default_input_idx = sd.default.device[0]  # may be -1 if unset
-
-        logger.info("[MIC DEVICE] Available input devices:")
-        input_devices = []
-        for idx, dev in enumerate(devices):
-            if dev['max_input_channels'] > 0:
-                marker = ' <-- default' if idx == default_input_idx else ''
-                logger.info(
-                    f"[MIC DEVICE]   [{idx}] {dev['name']} "
-                    f"(channels={dev['max_input_channels']}){marker}"
-                )
-                input_devices.append((idx, dev))
-
-        if not input_devices:
-            logger.warning("[MIC DEVICE] No input devices found — using sounddevice default")
-            return None
-
-        # 1. Use system default if it is a valid input device
-        if default_input_idx >= 0:
-            default_dev = devices[default_input_idx]
-            if default_dev['max_input_channels'] > 0:
-                logger.info(
-                    f"[MIC DEVICE] Selected default system mic: "
-                    f"[{default_input_idx}] {default_dev['name']}"
-                )
-                return default_input_idx
-
-        # 2. Prefer a device whose name contains 'microphone' or 'mic'
-        for idx, dev in input_devices:
-            name_lower = dev['name'].lower()
-            if 'microphone' in name_lower or 'mic' in name_lower:
-                logger.info(
-                    f"[MIC DEVICE] Selected by name match: [{idx}] {dev['name']}"
-                )
-                return idx
-
-        # 3. Fall back to first available input device
-        idx, dev = input_devices[0]
-        logger.info(
-            f"[MIC DEVICE] Fallback to first input device: [{idx}] {dev['name']}"
-        )
-        return idx
-
-    except Exception as e:
-        logger.warning(f"[MIC DEVICE] Device enumeration failed: {e} — using sounddevice default")
-        return None
-
-
-# Defer mic device resolution to run on the active recording thread
-_mic_device = None
+    """Enumerate available input devices and return selected device index."""
+    return select_mic_device()
 
 
 def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -> Optional[str]:
     """Push-to-talk: hold hotkey to record, release to transcribe.
-    Uses module-level VoiceListener to avoid reloading model.
-    Returns transcribed text or None.
-
-    Fallback/Server Mode: if use_keyboard is False or hooks are unavailable,
-    records immediately and auto-stops on silence (VAD) or stop_event trigger.
+    Maintains compatibility with caller signatures.
     """
-    import sys
+    import time
+    import sounddevice as sd
+    import numpy as np
+    import tempfile
+    import soundfile as sf
+    
     if sys.platform == 'win32':
         try:
             import ctypes
@@ -277,55 +138,48 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
         except Exception as com_err:
             logger.warning(f"[VOICE] CoInitialize failed: {com_err}")
 
-    global _mic_device
-    if _mic_device is None:
-        _mic_device = _select_mic_device()
-
-    import sounddevice as sd
-    import numpy as np
-    import tempfile
-    import os
-    import soundfile as sf
-
+    # 1. Microphone check
+    selected_mic = _select_mic_device()
     SAMPLE_RATE = 16000
     listener = _get_voice_listener()
-
+    
     if use_keyboard:
         logger.info(f"[VOICE] Waiting for {hotkey} (use_keyboard={use_keyboard})")
         print(f"[JARVIS] Hold {hotkey} to speak. Release to process.")
     else:
         logger.info("[VOICE] Microphone active")
+        
     frames = []
-
+    
     def audio_callback(indata, frame_count, time_info, status):
         if status:
             logger.warning(f"[VOICE] Audio callback status: {status}")
         frames.append(indata.copy())
 
-    # ── Try keyboard hotkey mode ───────────────────────────────────────────────
     keyboard_available = False
     if use_keyboard:
         try:
             import keyboard
             keyboard_available = True
         except Exception as kb_err:
-            logger.warning(f"[VOICE] keyboard module unavailable: {kb_err} — using timed fallback")
+            logger.warning(f"[VOICE] keyboard module unavailable: {kb_err} — using VAD fallback")
 
+    recording_start = time.time()
+    
     try:
         if keyboard_available:
-            # Wait for hotkey press
+            import keyboard
             keyboard.wait(hotkey)
-            logger.info(f"[VOICE] F9 detected")
-            logger.info(f"[VOICE] Recording started — device={_mic_device}")
+            logger.info("[VOICE] Hotkey pressed — recording started")
             print("[JARVIS] Listening...")
             frames.clear()
 
             with sd.InputStream(samplerate=SAMPLE_RATE,
-                               channels=1,
-                               dtype='float32',
-                               device=_mic_device,
-                               callback=audio_callback,
-                               blocksize=4096):
+                                channels=1,
+                                dtype='float32',
+                                device=selected_mic,
+                                callback=audio_callback,
+                                blocksize=4096):
                 while keyboard.is_pressed(hotkey):
                     if stop_event and stop_event.is_set():
                         break
@@ -333,57 +187,37 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
 
             logger.info("[VOICE] Recording stopped")
         else:
-            # Fallback: record with silence-based auto-stop (Voice Activity Detection)
-            logger.info("[VOICE] Recording started — silence-based auto-stop fallback")
+            # Fallback/Server mode: Voice Activity Detection (VAD) loop
+            logger.info("[VOICE] Recording started (VAD auto-stop)")
             print("[JARVIS] Listening... (will auto-stop after 1.5s of silence)")
             frames.clear()
 
+            detector = VADDetector(sample_rate=SAMPLE_RATE)
+            
             with sd.InputStream(samplerate=SAMPLE_RATE,
-                               channels=1,
-                               dtype='float32',
-                               device=_mic_device,
-                               callback=audio_callback,
-                               blocksize=4096):
-                
-                has_spoken = False
-                silence_threshold = 0.003
-                initial_silence_limit = 4.0  # 4 seconds to start speaking
-                active_silence_limit = 1.5   # 1.5 seconds of silence to stop after speaking
-                max_duration = 15.0  # seconds
+                                channels=1,
+                                dtype='float32',
+                                device=selected_mic,
+                                callback=audio_callback,
+                                blocksize=4096):
                 
                 chunk_duration = 4096 / SAMPLE_RATE
-                max_chunks = int(max_duration / chunk_duration)
-                
-                silence_count = 0
-                chunks_recorded = 0
-                
-                while chunks_recorded < max_chunks:
+                while True:
                     if stop_event and stop_event.is_set():
                         logger.info("[VOICE] Stop event detected — stopping recording")
                         break
                         
                     sd.sleep(int(chunk_duration * 1000))
-                    chunks_recorded = len(frames)
                     
                     if len(frames) > 0:
-                        # Check last frame's root-mean-square (RMS) energy
-                        last_frame = frames[-1].flatten()
-                        rms = np.sqrt(np.mean(last_frame ** 2)) if len(last_frame) > 0 else 0
-                        if rms >= silence_threshold:
-                            has_spoken = True
-                            silence_count = 0
-                        else:
-                            silence_count += 1
-                            
-                    limit = active_silence_limit if has_spoken else initial_silence_limit
-                    chunks_needed = int(limit / chunk_duration)
-                    
-                    if silence_count >= chunks_needed:
-                        logger.info(f"[VOICE] Silence detected ({limit}s) — auto-stopping")
-                        break
-                        
-            logger.info("[VOICE] Recording stopped (auto-stop)")
+                        # Process latest frame via VAD state machine
+                        if detector.process_frame(frames[-1]):
+                            break
 
+            logger.info("[VOICE] Recording stopped")
+
+        recording_duration = time.time() - recording_start
+        logger.info(f"[VOICE] Recording duration: {recording_duration:.2f}s")
         print("[JARVIS] Transcribing...")
 
         if not frames:
@@ -392,15 +226,17 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
 
         # Convert to numpy array
         audio = np.concatenate(frames, axis=0).flatten()
-        logger.info(f"[VOICE] Audio captured — {len(audio)} samples, duration={len(audio)/SAMPLE_RATE:.1f}s")
-
-        # Check if audio has sufficient volume (not just silence)
-        rms = np.sqrt(np.mean(audio ** 2))
-        logger.info(f"[VOICE] RMS level: {rms:.4f} (threshold=0.003)")
-        if rms < 0.003:
-            logger.warning(f"[VOICE] Audio too quiet (RMS: {rms:.4f}), likely silence")
+        
+        # Calculate & log audio stats (RMS, Peak, Silence%, Clipping warning)
+        stats = calculate_audio_stats(audio, SAMPLE_RATE)
+        
+        if stats['rms'] < 0.003:
+            logger.warning(f"[VOICE] Audio too quiet (RMS: {stats['rms']:.4f}), likely silence")
             print("[JARVIS] No speech detected. Try speaking louder.")
             return None
+
+        # Save copy to voice_debug directory
+        save_debug_wav(audio, SAMPLE_RATE)
 
         # Save to temp file and transcribe
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
@@ -414,13 +250,12 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
                 print("[JARVIS] Could not understand. Try again.")
                 return None
 
-            # Normalize: strip, lowercase, remove leading/trailing punctuation, collapse whitespace
-            import string
-            result = raw.strip()
-            result_lower = result.lower().strip(string.punctuation + ' ')
-            result_normalized = ' '.join(result_lower.split())
-            logger.info(f"[TRANSCRIPTION] raw={result!r}")
-            logger.info(f"[TRANSCRIPTION] normalized={result_normalized!r}")
+            # Clean and normalize text transcript
+            norm_start = time.time()
+            result_normalized = normalize_text(raw)
+            norm_time = (time.time() - norm_start) * 1000
+            logger.info(f"[VOICE] Normalization duration: {norm_time:.2f} ms")
+            
             logger.info(f"[VOICE] Sending to router: {result_normalized!r}")
             print(f"[JARVIS] Heard: {result_normalized}")
             return result_normalized

@@ -98,18 +98,21 @@ class Orchestrator:
         if self.cancel_flag and self.cancel_flag.is_set():
             raise Exception("__CANCEL__ received. Aborting task execution.")
     
-    def process_goal(self, goal: str, user_context: Optional[Dict] = None) -> Dict[str, Any]:
+    def process_goal(self, goal: str, user_context: Optional[Dict] = None, is_voice: bool = False) -> Dict[str, Any]:
         """
         Main entry point: Process a user goal
         
         Args:
             goal: User's spoken/typed goal
             user_context: Optional context about user
+            is_voice: Flag indicating goal originated from voice pipeline
             
         Returns:
             Response dict with result, logs, memory updates
         """
         logger.info(f"[GOAL] Processing: {goal}")
+        if is_voice:
+            logger.info(f"[VOICE] Router input: {goal}")
         
         response = {
             'goal': goal,
@@ -144,6 +147,8 @@ class Orchestrator:
             if route_result['is_command']:
                 self.check_cancellation()
                 logger.info(f"[ROUTER] Command detected: {route_result['command_type']}")
+                if is_voice:
+                    logger.info(f"[VOICE] Selected tool: {route_result['command_type']}")
                 response['tool_used'] = route_result['command_type']
                 
                 # Ensure action is set for file and browser tools
@@ -200,11 +205,15 @@ class Orchestrator:
                     except Exception as translate_err:
                         logger.warning(f"[LANGUAGE] Response translation failed: {translate_err}")
 
+                if is_voice:
+                    logger.info(f"[VOICE] Execution result: {response['result']}")
                 return response
             
             self.check_cancellation()
             # Step 2: If not a pure command, use planner (Ollama)
             logger.info("[STEP 2] Calling planner for reasoning...")
+            if is_voice:
+                logger.info(f"[VOICE] Planner input: {goal}")
             plan = self.planner.plan(goal, self.memory.get_context())
             
             tool_type = plan.get('tool_type', 'none')
@@ -213,6 +222,8 @@ class Orchestrator:
             if requires_tool and tool_type and not any(tool_type.lower().startswith(x) for x in ('none', 'unknown') if x):
                 self.check_cancellation()
                 logger.info(f"[PLANNER] Tool needed: {tool_type}")
+                if is_voice:
+                    logger.info(f"[VOICE] Selected tool: {tool_type}")
                 response['tool_used'] = tool_type
                 
                 # Execute the tool
@@ -248,6 +259,8 @@ class Orchestrator:
                 except Exception as translate_err:
                     logger.warning(f"[LANGUAGE] Response translation failed: {translate_err}")
 
+            if is_voice:
+                logger.info(f"[VOICE] Execution result: {response['result']}")
             logger.info(f"[SUCCESS] Goal processed: {goal}")
             return response
             
@@ -256,6 +269,8 @@ class Orchestrator:
             response['success'] = False
             response['result'] = f"Error: {str(e)}"
             response['logs'].append(f"[ERROR] {str(e)}")
+            if is_voice:
+                logger.info(f"[VOICE] Execution result: {response['result']}")
             return response
     
     def _verify_execution(self, tool_type: str, parameters: Dict, return_dict: Dict[str, Any]) -> Dict[str, Any]:

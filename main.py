@@ -36,7 +36,7 @@ _cancel_flag = threading.Event()
 _drain_stop = threading.Event()
 
 
-def _run_task(orchestrator: Orchestrator, goal: str) -> None:
+def _run_task(orchestrator: Orchestrator, goal: str, is_voice: bool = False) -> None:
     """
     Execute process_goal() in a background thread.
     Puts status strings and the final result dict into _result_queue.
@@ -47,7 +47,13 @@ def _run_task(orchestrator: Orchestrator, goal: str) -> None:
 
     try:
         _result_queue.put(('[TASK RUNNING]', goal))
-        result = orchestrator.process_goal(goal)
+        import time
+        start_exec = time.time()
+        result = orchestrator.process_goal(goal, is_voice=is_voice)
+        exec_duration = time.time() - start_exec
+        if is_voice:
+            import logging
+            logging.getLogger('VOICE').info(f"[VOICE] Execution duration: {exec_duration:.2f}s")
         _result_queue.put(('[TASK COMPLETE]', result))
     except Exception as e:
         _result_queue.put(('[TASK COMPLETE]', {
@@ -59,11 +65,11 @@ def _run_task(orchestrator: Orchestrator, goal: str) -> None:
         _task_running.clear()
 
 
-def submit_goal(orchestrator: Orchestrator, goal: str) -> None:
+def submit_goal(orchestrator: Orchestrator, goal: str, is_voice: bool = False) -> None:
     """
     Queue a goal for sequential processing by the background worker.
     """
-    _task_queue.put(goal)
+    _task_queue.put((goal, is_voice))
 
 
 def _task_worker(orchestrator: Orchestrator) -> None:
@@ -72,11 +78,12 @@ def _task_worker(orchestrator: Orchestrator) -> None:
     """
     while True:
         try:
-            goal = _task_queue.get()
-            if goal is None:
+            item = _task_queue.get()
+            if item is None:
                 break
+            goal, is_voice = item
             _cancel_flag.clear()
-            _run_task(orchestrator, goal)
+            _run_task(orchestrator, goal, is_voice)
             _task_queue.task_done()
         except Exception as e:
             sys.stderr.write(f"[TASK WORKER ERROR] {e}\n")
@@ -215,7 +222,7 @@ def _voice_listen_once(orchestrator: Orchestrator, tts=None) -> None:
         _emit('[ROUTER]', f'{cmd_type}/{action} → "{goal}"')
 
         # Submit to background task runner
-        submit_goal(orchestrator, goal)
+        submit_goal(orchestrator, goal, is_voice=True)
 
     except Exception as e:
         _emit('[VOICE]', f'Error: {e}')
@@ -341,7 +348,7 @@ def run_voice_mode(orchestrator: Orchestrator, tts=None) -> None:
             action = route.get('action') or 'reason'
             _emit('[ROUTER]', f'{cmd_type}/{action} → "{goal}"')
 
-            submit_goal(orchestrator, goal)
+            submit_goal(orchestrator, goal, is_voice=True)
 
         except KeyboardInterrupt:
             print('\n[JARVIS] Cancelling and exiting...')
@@ -349,9 +356,146 @@ def run_voice_mode(orchestrator: Orchestrator, tts=None) -> None:
             break
 
 
+def run_voice_debug_mode() -> None:
+    """
+    Voice Debug Diagnostic Mode.
+    NO planner, NO router, NO tools.
+    Only captures, calculates DSP stats, saves to WAV, transcribes, and lists word confidences.
+    Supports replaying existing WAV debug recordings.
+    """
+    import os
+    import sys
+    import logging
+    import soundfile as sf
+    from voice_listener import listen_ptt, _get_voice_listener, _select_mic_device
+    from voice.utils import calculate_audio_stats
+    
+    # Enable full logging for diagnostics
+    logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
+    logging.getLogger('VOICE_LISTENER').setLevel(logging.INFO)
+    logging.getLogger('VOICE.CAPTURE').setLevel(logging.INFO)
+    logging.getLogger('VOICE.STT').setLevel(logging.INFO)
+    
+    # Set diagnostic mode environment variable so STT and audio capture know it is running
+    os.environ["VOICE_DIAGNOSTIC"] = "true"
+    
+    # Enforce default language to English for command mode diagnostics
+    os.environ["VOICE_LANGUAGE_MODE"] = "english"
+    
+    print("=" * 60)
+    print("        JARVIS VOICE PIPELINE DIAGNOSTIC MODE       ")
+    print("=" * 60)
+    
+    # 1. Enumerate input devices
+    selected_mic = _select_mic_device()
+    if selected_mic is None:
+        print("[ERROR] No microphone available. Exiting.")
+        return
+        
+    # 2. Pre-load STT model
+    print("\nLoading Whisper model...")
+    listener = _get_voice_listener()
+    if not listener or not listener.transcriber.model:
+        print("[ERROR] Whisper model could not be loaded. Exiting.")
+        return
+        
+    while True:
+        print("\n" + "=" * 40)
+        print(" DIAGNOSTIC MENU:")
+        print(" 1. Live microphone test")
+        print(" 2. Replay existing WAV recording")
+        print(" 3. List stored debug recordings")
+        print(" 4. Exit")
+        print("=" * 40)
+        
+        choice = input("Select an option [1-4]: ").strip()
+        if choice == '4':
+            print("Exiting diagnostics.")
+            break
+            
+        elif choice == '1':
+            print("\nStarting live microphone capture...")
+            input("Press Enter to start speaking... (Recording auto-stops after 1.5s of silence)")
+            print("\nRecording started.")
+            # Run PTT loop without keyboard trigger to run VAD
+            goal = listen_ptt(use_keyboard=False)
+            print("-" * 40)
+            print(f"Transcribed Text result: {goal}")
+            print("-" * 40)
+            
+        elif choice == '2':
+            debug_dir = "voice_debug"
+            if not os.path.exists(debug_dir) or not os.listdir(debug_dir):
+                print(f"\nNo recordings found in '{debug_dir}/' directory.")
+                continue
+                
+            files = sorted([f for f in os.listdir(debug_dir) if f.endswith('.wav')])
+            if not files:
+                print(f"\nNo .wav recordings found in '{debug_dir}/' directory.")
+                continue
+                
+            print("\nSelect a recording to replay:")
+            for idx, filename in enumerate(files):
+                filepath = os.path.join(debug_dir, filename)
+                size_kb = os.path.getsize(filepath) / 1024
+                print(f" [{idx}]: {filename} ({size_kb:.1f} KB)")
+                
+            try:
+                ans = input(f"Enter index [0-{len(files)-1}]: ").strip()
+                selected_idx = int(ans)
+                if 0 <= selected_idx < len(files):
+                    chosen_file = os.path.join(debug_dir, files[selected_idx])
+                    print(f"\nReplaying and analyzing: {chosen_file}")
+                    
+                    # 1. Read WAV and calculate audio stats
+                    audio, sr = sf.read(chosen_file)
+                    print("\n--- DSP AUDIO METRICS ---")
+                    calculate_audio_stats(audio, sr)
+                    
+                    # 2. Transcribe WAV and print Whisper results
+                    print("\n--- WHISPER TRANSCRIPTION ---")
+                    res = listener.transcriber.transcribe(chosen_file)
+                    print("-" * 40)
+                    if res.get('success'):
+                        print(f"Detected Language: {res['detected_lang']} (prob={res['lang_prob']:.4f})")
+                        print(f"Whisper Duration: {res['whisper_time']:.3f}s")
+                        print(f"Raw Transcript: {res['text']}")
+                        print(f"Confidence score: {res['confidence']:.4f} (avg_logprob={res['avg_logprob']:.4f})")
+                    else:
+                        print(f"Transcription failed: {res.get('error')}")
+                    print("-" * 40)
+                else:
+                    print("[ERROR] Index out of range.")
+            except ValueError:
+                print("[ERROR] Please enter a valid number.")
+            except Exception as e:
+                print(f"[ERROR] Replay failed: {e}")
+                
+        elif choice == '3':
+            debug_dir = "voice_debug"
+            if not os.path.exists(debug_dir) or not os.listdir(debug_dir):
+                print(f"\nNo recordings found in '{debug_dir}/'.")
+            else:
+                files = sorted([f for f in os.listdir(debug_dir) if f.endswith('.wav')])
+                print(f"\nList of stored debug recordings ({len(files)} total):")
+                for f in files:
+                    filepath = os.path.join(debug_dir, f)
+                    size_kb = os.path.getsize(filepath) / 1024
+                    ctime = datetime.datetime.fromtimestamp(os.path.getctime(filepath)).strftime('%Y-%m-%d %H:%M:%S')
+                    print(f"  - {f:<25} | Size: {size_kb:>6.1f} KB | Created: {ctime}")
+        else:
+            print("[ERROR] Invalid choice. Select 1-4.")
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def main():
+    import datetime  # Ensure datetime is loaded for choices
+    if '--voice-debug' in sys.argv:
+        import datetime # local import to support datetime inside loop
+        run_voice_debug_mode()
+        return
+
     print_banner()
     orchestrator = Orchestrator()
 
