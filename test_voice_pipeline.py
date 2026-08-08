@@ -29,6 +29,7 @@ class TestVoicePipeline(unittest.TestCase):
         os.environ["VOICE_CONFIDENCE_THRESHOLD"] = "0.4"
         os.environ["VOICE_DIAGNOSTIC"] = "false"
         os.environ["VOICE_LANGUAGE_MODE"] = "english"
+        os.environ["VOICE_VAD_THRESHOLD"] = "0.003"
 
     def tearDown(self):
         os.environ.clear()
