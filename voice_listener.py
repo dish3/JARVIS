@@ -184,7 +184,9 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
             print("[JARVIS] Listening... (will auto-stop after 1.5s of silence)")
             frames.clear()
 
-            detector = VADDetector(sample_rate=SAMPLE_RATE)
+            vad_threshold = float(os.getenv("VOICE_VAD_THRESHOLD", "0.003"))
+            logger.info(f"[VOICE] Initializing VAD with threshold: {vad_threshold}")
+            detector = VADDetector(sample_rate=SAMPLE_RATE, silence_threshold=vad_threshold)
             
             with sd.InputStream(samplerate=SAMPLE_RATE,
                                 channels=1,
