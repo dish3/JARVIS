@@ -224,8 +224,15 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
         # Calculate & log audio stats (RMS, Peak, Silence%, Clipping warning)
         stats = calculate_audio_stats(audio, SAMPLE_RATE)
         
-        if stats['rms'] < 0.003:
-            logger.warning(f"[VOICE] Audio too quiet (RMS: {stats['rms']:.4f}), likely silence")
+        vad_threshold = float(os.getenv("VOICE_VAD_THRESHOLD", "0.003"))
+        if stats['rms'] < vad_threshold:
+            logger.warning(
+                "[VOICE] Rejecting transcript='%s' confidence=%f because audio too quiet (RMS: %f < threshold: %f)",
+                "",
+                0.0,
+                stats['rms'],
+                vad_threshold,
+            )
             print("[JARVIS] No speech detected. Try speaking louder.")
             return None
 
