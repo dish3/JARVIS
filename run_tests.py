@@ -379,26 +379,32 @@ class TestPlanner(unittest.TestCase):
 
     def test_parse_response_tool(self):
         response_text = """
-TOOL: terminal
-ACTION: execute
-PARAMETERS: {"command": "npm install"}
-RESPONSE: I will install npm packages now.
+{
+  "reasoning": "need to run command",
+  "tool": "terminal",
+  "action": "execute",
+  "parameters": {"command": "npm install"},
+  "response": "I will install npm packages now."
+}
 """
-        res = self.planner._parse_response(response_text, "install packages")
+        res = self.planner._parse_json_response(response_text, "install packages")
         self.assertTrue(res["requires_tool"])
         self.assertEqual(res["tool_type"], "terminal")
         self.assertEqual(res["action"], "execute")
-        self.assertEqual(res["parameters"], {"command": "npm install"})
+        self.assertEqual(res["parameters"]["command"], "npm install")
         self.assertEqual(res["response"], "I will install npm packages now.")
 
     def test_parse_response_no_tool(self):
         response_text = """
-TOOL: none
-ACTION: none
-PARAMETERS: NONE
-RESPONSE: Python is a high-level programming language.
+{
+  "reasoning": "explain python",
+  "tool": null,
+  "action": null,
+  "parameters": {},
+  "response": "Python is a high-level programming language."
+}
 """
-        res = self.planner._parse_response(response_text, "what is python")
+        res = self.planner._parse_json_response(response_text, "what is python")
         self.assertFalse(res["requires_tool"])
         self.assertIsNone(res["tool_type"])
         self.assertEqual(res["response"], "Python is a high-level programming language.")
@@ -406,7 +412,7 @@ RESPONSE: Python is a high-level programming language.
     def test_unavailable_response(self):
         res = self.planner._unavailable_response("test goal")
         self.assertFalse(res["requires_tool"])
-        self.assertIn("Ollama is not running", res["response"])
+        self.assertIn("No AI backend is available", res["response"])
 
 
 class TestOrchestrator(unittest.TestCase):
@@ -450,12 +456,15 @@ class TestOrchestrator(unittest.TestCase):
 
     @patch('planner.Planner._is_ollama_available', return_value=False)
     def test_orchestrator_planner_fallback_flow(self, mock_is_available):
-        # Goal that requires planner, but Ollama is offline
+        # Force both Groq and Ollama to be offline for a deterministic offline test
+        self.orchestrator.planner._groq_available = False
+        self.orchestrator.planner._ollama_available = False
+        
         goal = "explain string theory in detail"
         res = self.orchestrator.process_goal(goal)
         
         self.assertTrue(res["success"])
-        self.assertIn("Ollama is not running", res["result"])
+        self.assertIn("No AI backend is available", res["result"])
 
 
 class TestVoiceComponents(unittest.TestCase):
