@@ -90,13 +90,24 @@ class TestVoicePipeline(unittest.TestCase):
     @patch('sounddevice.query_devices')
     @patch('sounddevice.default')
     def test_select_mic_device_env_override(self, mock_sd_default, mock_query_devices):
+        # Configure default device index as an integer array to prevent MagicMock comparison issues
+        mock_sd_default.device = [0, 0]
+        
         mock_query_devices.return_value = [
             {'name': 'Realtek Microphone', 'max_input_channels': 2, 'default_samplerate': 44100.0},
             {'name': 'USB Headset', 'max_input_channels': 1, 'default_samplerate': 16000.0}
         ]
-        # Override via environment variable
+        
+        # Test VOICE_MIC_INDEX override
         os.environ["VOICE_MIC_INDEX"] = "1"
+        if "VOICE_INPUT_DEVICE" in os.environ:
+            del os.environ["VOICE_INPUT_DEVICE"]
         self.assertEqual(select_mic_device(), 1)
+        
+        # Test VOICE_INPUT_DEVICE override
+        del os.environ["VOICE_MIC_INDEX"]
+        os.environ["VOICE_INPUT_DEVICE"] = "0"
+        self.assertEqual(select_mic_device(), 0)
 
     # 5. Transcription Confidence Gating Tests
     @patch('voice_listener.STTTranscriber')

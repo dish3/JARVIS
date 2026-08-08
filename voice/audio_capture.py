@@ -52,6 +52,19 @@ def select_mic_device() -> int | None:
         logger.warning("[VOICE] Microphone detected: None found!")
         return None
         
+    import os
+    env_override = os.getenv("VOICE_INPUT_DEVICE") or os.getenv("VOICE_MIC_INDEX")
+    if env_override is not None:
+        try:
+            env_idx = int(env_override)
+            if any(d['index'] == env_idx for d in devices):
+                logger.info(f"[VOICE] Environment override active. Selecting device [{env_idx}]")
+                return env_idx
+            else:
+                logger.warning(f"[VOICE] Environment override index {env_idx} is not a valid input device.")
+        except ValueError:
+            logger.warning(f"[VOICE] Environment override '{env_override}' is not a valid integer.")
+        
     try:
         import sounddevice as sd
         default_input_idx = sd.default.device[0]
