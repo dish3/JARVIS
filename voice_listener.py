@@ -57,15 +57,7 @@ class VoiceListener:
         detected_lang = res['detected_lang']
         
         # Read config gates
-        diagnostic_mode = os.getenv("VOICE_DIAGNOSTIC", "false").lower() == "true"
         confidence_threshold = float(os.getenv("VOICE_CONFIDENCE_THRESHOLD", "0.4"))
-        
-        # STT Diagnostic-only mode check
-        if diagnostic_mode:
-            logger.info(f"[VOICE] [DIAGNOSTIC] Skipping router/planner. Raw transcript: {text!r}")
-            print(f"[JARVIS] STT Diagnostic: Detected: {text}", flush=True)
-            print(f"[TASK COMPLETE] [OK] [none] [DIAGNOSTIC] Heard: {text}", flush=True)
-            return None
             
         # Confidence threshold check
         if confidence < confidence_threshold:

@@ -214,6 +214,13 @@ def _voice_listen_once(orchestrator: Orchestrator, tts=None) -> None:
 
         _emit('[TRANSCRIPTION]', goal)
 
+        # Check if diagnostic mode is active to skip routing/planning
+        if os.getenv("VOICE_DIAGNOSTIC", "false").lower() == "true":
+            import logging
+            logging.getLogger('VOICE').info(f"[VOICE] [DIAGNOSTIC] Diagnostic mode active. Skipping router/planner.")
+            print(f"[TASK COMPLETE] [OK] [none] [DIAGNOSTIC] Heard: {goal}", flush=True)
+            return
+
         # Route log — show what the router will do before submitting
         from router import Router
         route = Router().route(goal)
@@ -341,6 +348,12 @@ def run_voice_mode(orchestrator: Orchestrator, tts=None) -> None:
                 continue
 
             _emit('[TRANSCRIPTION]', goal)
+
+            # Check if diagnostic mode is active to skip routing/planning
+            if os.getenv("VOICE_DIAGNOSTIC", "false").lower() == "true":
+                import logging
+                logging.getLogger('VOICE').info(f"[VOICE] [DIAGNOSTIC] Diagnostic mode active. Skipping router/planner.")
+                continue
 
             from router import Router
             route = Router().route(goal)
