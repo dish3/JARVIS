@@ -30,6 +30,14 @@ class TestVoicePipeline(unittest.TestCase):
         os.environ["VOICE_DIAGNOSTIC"] = "false"
         os.environ["VOICE_LANGUAGE_MODE"] = "english"
         os.environ["VOICE_VAD_THRESHOLD"] = "0.003"
+        os.environ["VOICE_VAD_MIN_THRESHOLD"] = "0.003"
+        os.environ["VOICE_VAD_START_MULTIPLIER"] = "3.0"
+        os.environ["VOICE_VAD_STOP_MULTIPLIER"] = "1.5"
+        os.environ["VOICE_VAD_MIN_SPEECH_MS"] = "250"
+        os.environ["VOICE_VAD_SILENCE_MS"] = "700"
+        os.environ["VOICE_VAD_MAX_RECORDING_SECONDS"] = "10"
+        os.environ["VOICE_VAD_PREROLL_MS"] = "200"
+        os.environ["VOICE_POST_TTS_COOLDOWN_MS"] = "300"
 
     def tearDown(self):
         os.environ.clear()

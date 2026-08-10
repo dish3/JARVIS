@@ -9,6 +9,12 @@ from typing import Optional
 
 logger = logging.getLogger('VOICE_OUTPUT')
 
+_is_speaking = False
+
+def is_tts_speaking() -> bool:
+    global _is_speaking
+    return _is_speaking
+
 
 class VoiceOutput:
     """Convert text to speech and play audio"""
@@ -56,7 +62,9 @@ class VoiceOutput:
             logger.error("[VOICE] Engine not initialized")
             return False
         
+        global _is_speaking
         try:
+            _is_speaking = True
             self.engine.say(text)
             if wait:
                 self.engine.runAndWait()
@@ -66,6 +74,8 @@ class VoiceOutput:
         except Exception as e:
             logger.error(f"[VOICE] Speech error: {str(e)}")
             return False
+        finally:
+            _is_speaking = False
     
     def save_to_file(self, text: str, filename: str) -> bool:
         """

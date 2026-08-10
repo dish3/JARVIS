@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from voice.stt import STTTranscriber
+from voice.vad import VADDetector
 
 def run_whisper_test(filepath: str, transcriber: STTTranscriber, test_name: str, 
                      language: str, temperature: float, beam_size: int, vad_filter: bool):
@@ -22,7 +23,6 @@ def run_whisper_test(filepath: str, transcriber: STTTranscriber, test_name: str,
     print(f"    Parameters: language={language!r}, temperature={temperature}, beam_size={beam_size}, vad_filter={vad_filter}")
     
     try:
-        # Call model.transcribe directly to have full parameter control
         segments, info = transcriber.model.transcribe(
             filepath,
             language=language,
@@ -76,14 +76,56 @@ def analyze_audio_deep(filepath: str, transcriber: STTTranscriber):
     overall_rms = np.sqrt(np.mean(audio_data ** 2))
     overall_peak = np.max(np.abs(audio_data))
     
+    # Run VAD Simulation to find speech start/end boundaries and noise floor calibration
+    chunk_size = 4096
+    detector = VADDetector(sample_rate=sr)
+    num_chunks = samples // chunk_size
+    
+    for i in range(num_chunks):
+        chunk = audio_data[i * chunk_size : (i + 1) * chunk_size]
+        detector.process_frame(chunk)
+        
+    # Calibration details
+    cal_size = int(0.5 * sr)
+    calibration_audio = audio_data[0:cal_size]
+    cal_noise_rms = np.sqrt(np.mean(calibration_audio ** 2)) if len(calibration_audio) > 0 else 0.003
+    
+    # Derived thresholds
+    min_threshold = float(os.getenv("VOICE_VAD_MIN_THRESHOLD", "0.003"))
+    start_mult = float(os.getenv("VOICE_VAD_START_MULTIPLIER", "3.0"))
+    stop_mult = float(os.getenv("VOICE_VAD_STOP_MULTIPLIER", "1.5"))
+    derived_start = max(min_threshold, cal_noise_rms * start_mult)
+    derived_stop = max(min_threshold / 2.0, cal_noise_rms * stop_mult)
+    
+    # Speech Segment Metrics
+    if detector.speech_start_time is not None:
+        start_sample = int(detector.speech_start_time * sr)
+        end_sample = int(detector.speech_end_time * sr) if detector.speech_end_time is not None else samples
+        speech_audio = audio_data[start_sample:end_sample]
+    else:
+        speech_audio = audio_data
+        
+    speech_rms = np.sqrt(np.mean(speech_audio ** 2)) if len(speech_audio) > 0 else 0
+    speech_peak = np.max(np.abs(speech_audio)) if len(speech_audio) > 0 else 0
+    
     print("WAV Info:")
     print(f"  - Filepath: {filepath}")
     print(f"  - Sample Rate: {sr} Hz")
     print(f"  - Channels: {info.channels}")
     print(f"  - Format: {info.format} ({info.subtype})")
     print(f"  - Duration: {duration:.2f} seconds")
-    print(f"  - Peak Amplitude: {overall_peak:.4f}")
-    print(f"  - Overall WAV RMS: {overall_rms:.4f}")
+    print(f"  - Overall WAV RMS: {overall_rms:.6f}")
+    
+    print("\nCalibration & VAD Metrics:")
+    print(f"  - Calibration Noise RMS (first 0.5s): {cal_noise_rms:.6f}")
+    print(f"  - Speech RMS (active segment): {speech_rms:.6f}")
+    print(f"  - Peak RMS (active segment peak): {speech_peak:.6f}")
+    print(f"  - Derived Start Threshold: {derived_start:.6f}")
+    print(f"  - Derived Stop Threshold: {derived_stop:.6f}")
+    print(f"  - Speech Detected: {detector.has_spoken}")
+    if detector.has_spoken:
+        print(f"    * Speech Start: {detector.speech_start_time:.3f}s")
+        print(f"    * Speech End: {detector.speech_end_time:.3f}s" if detector.speech_end_time is not None else "    * Speech End: N/A (reached end)")
     
     # 2. Frame-Level Statistics (25 ms frames)
     frame_size_ms = 25
@@ -91,69 +133,33 @@ def analyze_audio_deep(filepath: str, transcriber: STTTranscriber):
     num_frames = samples // frame_size
     
     frame_rms = []
-    frame_peaks = []
     
     for i in range(num_frames):
         frame = audio_data[i * frame_size : (i + 1) * frame_size]
         if len(frame) > 0:
             frame_rms.append(np.sqrt(np.mean(frame ** 2)))
-            frame_peaks.append(np.max(np.abs(frame)))
             
     frame_rms = np.array(frame_rms)
-    frame_peaks = np.array(frame_peaks)
     
-    # Frame level metrics
     min_rms = np.min(frame_rms)
     median_rms = np.median(frame_rms)
     p90_rms = np.percentile(frame_rms, 90)
     max_rms = np.max(frame_rms)
     
-    # Percentages
     pct_below_003 = np.sum(frame_rms < 0.003) / num_frames * 100
     pct_below_010 = np.sum(frame_rms < 0.010) / num_frames * 100
     pct_below_020 = np.sum(frame_rms < 0.020) / num_frames * 100
     pct_above_026 = np.sum(frame_rms > 0.026) / num_frames * 100
-    
-    # Estimate Noise Floor from silence regions (bottom 10% energy frames)
-    sorted_rms = np.sort(frame_rms)
-    noise_floor_estimate = np.mean(sorted_rms[:max(1, int(num_frames * 0.10))])
-    
-    # Find longest active / silence regions (threshold = 0.003)
-    active_mask = frame_rms >= 0.003
-    longest_active_frames = 0
-    longest_silence_frames = 0
-    
-    current_active = 0
-    current_silence = 0
-    
-    for act in active_mask:
-        if act:
-            current_active += 1
-            longest_silence_frames = max(longest_silence_frames, current_silence)
-            current_silence = 0
-        else:
-            current_silence += 1
-            longest_active_frames = max(longest_active_frames, current_active)
-            current_active = 0
-            
-    longest_active_frames = max(longest_active_frames, current_active)
-    longest_silence_frames = max(longest_silence_frames, current_silence)
-    
-    longest_active_duration = (longest_active_frames * frame_size_ms) / 1000.0
-    longest_silence_duration = (longest_silence_frames * frame_size_ms) / 1000.0
     
     print("\nFrame-Level Distribution:")
     print(f"  - Minimum Frame RMS: {min_rms:.5f}")
     print(f"  - Median Frame RMS: {median_rms:.5f}")
     print(f"  - 90th Percentile Frame RMS: {p90_rms:.5f}")
     print(f"  - Maximum Frame RMS: {max_rms:.5f}")
-    print(f"  - Estimated Noise Floor: {noise_floor_estimate:.5f}")
     print(f"  - % of frames below 0.003: {pct_below_003:.1f}%")
     print(f"  - % of frames below 0.010: {pct_below_010:.1f}%")
     print(f"  - % of frames below 0.020: {pct_below_020:.1f}%")
     print(f"  - % of frames above 0.026: {pct_above_026:.1f}%")
-    print(f"  - Longest Continuous Active Region (RMS >= 0.003): {longest_active_duration:.2f}s")
-    print(f"  - Longest Continuous Silence Region (RMS < 0.003): {longest_silence_duration:.2f}s")
     
     # 3. Whisper Test Matrix
     print("\nWhisper STT Experiment Matrix:")

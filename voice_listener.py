@@ -59,9 +59,11 @@ class VoiceListener:
         # Read config gates
         confidence_threshold = float(os.getenv("VOICE_CONFIDENCE_THRESHOLD", "0.4"))
             
+        logger.info(f"[VOICE] Whisper confidence: {confidence:.4f}")
+        
         # Confidence threshold check
         if confidence < confidence_threshold:
-            logger.warning(f"[VOICE] Transcription confidence ({confidence:.4f}, avg_logprob: {avg_lp:.4f}) below threshold ({confidence_threshold})")
+            logger.warning(f"[VOICE] Transcript rejected: '{text}' (low confidence {confidence:.4f})")
             print("[JARVIS] Sorry, I didn't catch that clearly, can you repeat?", flush=True)
             print("[TASK COMPLETE] [OK] [none] Sorry, I didn't catch that clearly, can you repeat?", flush=True)
             
@@ -74,9 +76,10 @@ class VoiceListener:
             return None
             
         if not text or not text.strip():
-            logger.warning("[VOICE] No speech detected in audio")
+            logger.warning("[VOICE] Transcript rejected: empty transcript")
             return None
             
+        logger.info(f"[VOICE] Transcript accepted: '{text}' (confidence: {confidence:.4f})")
         return text
 
     def transcribe_bytes(self, audio_bytes: bytes) -> Optional[str]:
@@ -141,12 +144,23 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
     else:
         logger.info("[VOICE] Microphone active")
         
+    raw_frames = []
     frames = []
     
     def audio_callback(indata, frame_count, time_info, status):
         if status:
             logger.warning(f"[VOICE] Audio callback status: {status}")
-        frames.append(indata.copy())
+        raw_frames.append(indata.copy())
+
+    # Wait if TTS is speaking to prevent microphone loopback feedback
+    from voice_output import is_tts_speaking
+    post_tts_cooldown = float(os.getenv("VOICE_POST_TTS_COOLDOWN_MS", "300")) / 1000.0
+    if is_tts_speaking():
+        logger.info("[VOICE] TTS is currently active. Pausing listen start.")
+        while is_tts_speaking():
+            time.sleep(0.05)
+        logger.info(f"[VOICE] TTS completed. Waiting post-TTS cooldown of {post_tts_cooldown}s...")
+        time.sleep(post_tts_cooldown)
 
     keyboard_available = False
     if use_keyboard:
@@ -157,6 +171,7 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
             logger.warning(f"[VOICE] keyboard module unavailable: {kb_err} — using VAD fallback")
 
     recording_start = time.time()
+    detector = VADDetector(sample_rate=SAMPLE_RATE)
     
     try:
         if keyboard_available:
@@ -164,7 +179,7 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
             keyboard.wait(hotkey)
             logger.info("[VOICE] Hotkey pressed — recording started")
             print("[JARVIS] Listening...")
-            frames.clear()
+            raw_frames.clear()
 
             with sd.InputStream(samplerate=SAMPLE_RATE,
                                 channels=1,
@@ -178,15 +193,16 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
                     sd.sleep(50)
 
             logger.info("[VOICE] Recording stopped")
+            frames = raw_frames.copy()
         else:
             # Fallback/Server mode: Voice Activity Detection (VAD) loop
             logger.info("[VOICE] Recording started (VAD auto-stop)")
-            print("[JARVIS] Listening... (will auto-stop after 1.5s of silence)")
+            logger.info("[VOICE] Capture started")
+            print("[JARVIS] Listening... (will auto-stop after speech ends)")
+            raw_frames.clear()
             frames.clear()
-
-            vad_threshold = float(os.getenv("VOICE_VAD_THRESHOLD", "0.003"))
-            logger.info(f"[VOICE] Initializing VAD with threshold: {vad_threshold}")
-            detector = VADDetector(sample_rate=SAMPLE_RATE, silence_threshold=vad_threshold)
+            processed_count = 0
+            speech_started = False
             
             with sd.InputStream(samplerate=SAMPLE_RATE,
                                 channels=1,
@@ -203,10 +219,31 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
                         
                     sd.sleep(int(chunk_duration * 1000))
                     
-                    if len(frames) > 0:
-                        # Process latest frame via VAD state machine
-                        if detector.process_frame(frames[-1]):
+                    stop_loop = False
+                    while processed_count < len(raw_frames):
+                        chunk = raw_frames[processed_count]
+                        processed_count += 1
+                        
+                        should_stop = detector.process_frame(chunk)
+                        
+                        if detector.has_spoken:
+                            if not speech_started:
+                                # Prepend pre-roll buffer to final frames
+                                frames.extend(detector.preroll_buffer)
+                                speech_started = True
+                            # Append current chunk to speech frames
+                            frames.append(chunk)
+                        else:
+                            # Not speaking yet, maintain pre-roll buffer in detector
+                            if len(detector.preroll_buffer) >= detector.preroll_chunks:
+                                detector.preroll_buffer.pop(0)
+                            detector.preroll_buffer.append(chunk)
+                            
+                        if should_stop:
+                            stop_loop = True
                             break
+                    if stop_loop:
+                        break
 
             logger.info("[VOICE] Recording stopped")
 
@@ -221,18 +258,30 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
         # Convert to numpy array
         audio = np.concatenate(frames, axis=0).flatten()
         
-        # Calculate & log audio stats (RMS, Peak, Silence%, Clipping warning)
+        # Calculate & log audio stats
         stats = calculate_audio_stats(audio, SAMPLE_RATE)
         
-        vad_threshold = float(os.getenv("VOICE_VAD_THRESHOLD", "0.003"))
-        if stats['rms'] < vad_threshold:
-            logger.warning(
-                "[VOICE] Rejecting transcript='%s' confidence=%f because audio too quiet (RMS: %f < threshold: %f)",
-                "",
-                0.0,
-                stats['rms'],
-                vad_threshold,
-            )
+        # Segment Telemetry
+        speech_start_val = f"{detector.speech_start_time:.3f}s" if detector.speech_start_time is not None else "N/A"
+        speech_end_val = f"{detector.speech_end_time:.3f}s" if detector.speech_end_time is not None else "N/A"
+        speech_duration_val = f"{detector.speech_end_time - detector.speech_start_time:.3f}s" if (detector.speech_start_time is not None and detector.speech_end_time is not None) else "N/A"
+        final_duration_val = f"{len(frames) * 4096 / SAMPLE_RATE:.3f}s"
+        
+        logger.info(f"[VOICE] Speech detected at: {speech_start_val}")
+        logger.info(f"[VOICE] Speech ended at: {speech_end_val}")
+        logger.info(f"[VOICE] Speech duration: {speech_duration_val}")
+        logger.info(f"[VOICE] Final segment duration: {final_duration_val}")
+        logger.info(f"[VOICE] Calibration RMS: {detector.noise_rms:.6f}")
+        logger.info(f"[VOICE] Start threshold: {detector.start_threshold:.6f}")
+        logger.info(f"[VOICE] Stop threshold: {detector.stop_threshold:.6f}")
+        logger.info(f"[VOICE] Segment RMS: {stats['rms']:.6f}")
+        logger.info(f"[VOICE] Segment peak: {stats['peak']:.6f}")
+        
+        # Minimum segment check
+        min_speech_ms = float(os.getenv("VOICE_VAD_MIN_SPEECH_MS", "250"))
+        segment_duration = len(frames) * 4096 / SAMPLE_RATE
+        if segment_duration < (min_speech_ms / 1000.0):
+            logger.warning(f"[VOICE] Rejecting segment: duration too short ({segment_duration:.3f}s < {min_speech_ms / 1000.0}s)")
             print("[JARVIS] No speech detected. Try speaking louder.")
             return None
 
