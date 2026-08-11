@@ -284,13 +284,22 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
         # Convert final segment to numpy array
         audio = np.concatenate(frames, axis=0).flatten()
         stats = calculate_audio_stats(audio, SAMPLE_RATE)
+        segment_duration = len(audio) / SAMPLE_RATE
+
+        # Save stage 2 & 3: VAD_SEGMENT and WHISPER_INPUT
+        vad_wav_path = f"voice_debug/vad_segment_{timestamp}.wav"
+        whisper_wav_path = f"voice_debug/whisper_input_{timestamp}.wav"
+        sf.write(vad_wav_path, audio, SAMPLE_RATE)
+        sf.write(whisper_wav_path, audio, SAMPLE_RATE)
+        logger.info(f"[VOICE] Saved VAD segment: {vad_wav_path}")
+        logger.info(f"[VOICE] Saved Whisper input: {whisper_wav_path}")
 
         # VAD Telemetry
         # Output exactly formatted logs for Task 2
         print(f"\n[VOICE.CAPTURE] callback_frames: {len(raw_frames)}  samples: {len(raw_frames) * 4096}")
         print(f"[VOICE.VAD]     frames_examined: {processed_count}")
         print(f"[VOICE.RECORDING] frames_saved: {len(frames)}  samples: {len(audio)}")
-        print(f"[VOICE.WAV]     duration: {len(audio)/SAMPLE_RATE:.2f}s  RMS: {stats['rms']:.6f}")
+        print(f"[VOICE.WAV]     duration: {segment_duration:.2f}s  RMS: {stats['rms']:.6f}")
 
         # Check VAD speech detection state
         if not detector.has_spoken:
@@ -328,17 +337,21 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
                 
             raw = res['text']
             confidence = res['confidence']
-            print(f"raw transcript: {raw!r}")
-            print(f"confidence: {confidence:.4f}")
             
             # Read config gates
             confidence_threshold = float(os.getenv("VOICE_CONFIDENCE_THRESHOLD", "0.4"))
             
             if not raw or not raw.strip():
-                print("[VOICE] RESULT: STT_EMPTY_TRANSCRIPT")
+                print("raw transcript: ''")
+                print(f"confidence: {confidence:.4f}")
+                print("[VOICE] RESULT: STT_EMPTY")
                 return None
                 
+            print(f"raw transcript: {raw!r}")
+            print(f"confidence: {confidence:.4f}")
+
             if confidence < confidence_threshold:
+                print(f"[VOICE] Rejected transcript: {raw!r} (confidence={confidence:.4f})")
                 print("[VOICE] RESULT: STT_LOW_CONFIDENCE")
                 # Trigger speak out loud
                 try:

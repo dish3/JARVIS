@@ -21,6 +21,7 @@ class STTTranscriber:
         """
         Initialize the Faster-Whisper engine.
         """
+        self.model_size = model_size
         logger.info(f"[VOICE] Whisper model: {model_size} (Initializing...)")
         try:
             from faster_whisper import WhisperModel
