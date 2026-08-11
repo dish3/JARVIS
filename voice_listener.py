@@ -245,60 +245,111 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
                     if stop_loop:
                         break
 
+            logger.info("[VOICE] Stopping capture")
+            logger.info("[VOICE] Waiting for capture buffer flush")
+            sd.sleep(100) # Allow any last frame in progress to complete
+            logger.info("[VOICE] Capture buffer flushed")
             logger.info("[VOICE] Recording stopped")
 
         recording_duration = time.time() - recording_start
-        logger.info(f"[VOICE] Recording duration: {recording_duration:.2f}s")
-        print("[JARVIS] Transcribing...")
+        
+        # Gather device info for telemetry
+        dev_name = "Intel Smart Sound / Default Input"
+        try:
+            import sounddevice as sd
+            devices = sd.query_devices()
+            if selected_mic is not None and selected_mic < len(devices):
+                dev_name = devices[selected_mic]['name']
+        except Exception:
+            pass
 
+        # Save all raw frames captured in the final segment to prevent frame loss
+        frames = raw_frames.copy()
+
+        # Save stage 1: RAW_CAPTURE
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        os.makedirs("voice_debug", exist_ok=True)
+        raw_wav_path = f"voice_debug/raw_capture_{timestamp}.wav"
+        if raw_frames:
+            raw_audio = np.concatenate(raw_frames, axis=0).flatten()
+            sf.write(raw_wav_path, raw_audio, SAMPLE_RATE)
+            logger.info(f"[VOICE] Saved raw capture: {raw_wav_path}")
+            
         if not frames:
-            logger.warning("[VOICE] No audio frames captured")
+            logger.warning("[VOICE] No audio frames captured in final segment")
+            print("\n[VOICE.CAPTURE] callback_frames: 0  samples: 0")
+            print("[VOICE] RESULT: CAPTURE_FAILED")
             return None
 
-        # Convert to numpy array
+        # Convert final segment to numpy array
         audio = np.concatenate(frames, axis=0).flatten()
-        
-        # Calculate & log audio stats
         stats = calculate_audio_stats(audio, SAMPLE_RATE)
-        
-        # Segment Telemetry
-        speech_start_val = f"{detector.speech_start_time:.3f}s" if detector.speech_start_time is not None else "N/A"
-        speech_end_val = f"{detector.speech_end_time:.3f}s" if detector.speech_end_time is not None else "N/A"
-        speech_duration_val = f"{detector.speech_end_time - detector.speech_start_time:.3f}s" if (detector.speech_start_time is not None and detector.speech_end_time is not None) else "N/A"
-        final_duration_val = f"{len(frames) * 4096 / SAMPLE_RATE:.3f}s"
-        
-        logger.info(f"[VOICE] Speech detected at: {speech_start_val}")
-        logger.info(f"[VOICE] Speech ended at: {speech_end_val}")
-        logger.info(f"[VOICE] Speech duration: {speech_duration_val}")
-        logger.info(f"[VOICE] Final segment duration: {final_duration_val}")
-        logger.info(f"[VOICE] Calibration RMS: {detector.noise_rms:.6f}")
-        logger.info(f"[VOICE] Start threshold: {detector.start_threshold:.6f}")
-        logger.info(f"[VOICE] Stop threshold: {detector.stop_threshold:.6f}")
-        logger.info(f"[VOICE] Segment RMS: {stats['rms']:.6f}")
-        logger.info(f"[VOICE] Segment peak: {stats['peak']:.6f}")
-        
-        # Minimum segment check
-        min_speech_ms = float(os.getenv("VOICE_VAD_MIN_SPEECH_MS", "250"))
-        segment_duration = len(frames) * 4096 / SAMPLE_RATE
-        if segment_duration < (min_speech_ms / 1000.0):
-            logger.warning(f"[VOICE] Rejecting segment: duration too short ({segment_duration:.3f}s < {min_speech_ms / 1000.0}s)")
+
+        # VAD Telemetry
+        # Output exactly formatted logs for Task 2
+        print(f"\n[VOICE.CAPTURE] callback_frames: {len(raw_frames)}  samples: {len(raw_frames) * 4096}")
+        print(f"[VOICE.VAD]     frames_examined: {processed_count}")
+        print(f"[VOICE.RECORDING] frames_saved: {len(frames)}  samples: {len(audio)}")
+        print(f"[VOICE.WAV]     duration: {len(audio)/SAMPLE_RATE:.2f}s  RMS: {stats['rms']:.6f}")
+
+        # Check VAD speech detection state
+        if not detector.has_spoken:
+            print("[VOICE] RESULT: VAD_NO_SPEECH")
             print("[JARVIS] No speech detected. Try speaking louder.")
             return None
 
-        # Save copy to voice_debug directory
+        # Save copy to voice_debug directory as the primary debug recording
         save_debug_wav(audio, SAMPLE_RATE)
 
-        # Save to temp file and transcribe
+        # Transcribe
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
             temp_path = f.name
             sf.write(temp_path, audio, SAMPLE_RATE)
 
         try:
-            raw = listener.transcribe_audio(temp_path)
-            if not raw or not raw.strip():
-                logger.warning("[TRANSCRIPTION] Empty result from Whisper")
-                print("[JARVIS] Could not understand. Try again.")
+            print(f"\n[VOICE.STT]")
+            print(f"input WAV duration: {segment_duration:.2f}s")
+            print(f"input sample rate: {SAMPLE_RATE}")
+            print(f"Whisper model: {listener.transcriber.model_size}")
+            
+            stt_start = time.time()
+            res = listener.transcriber.transcribe(temp_path)
+            stt_end = time.time()
+            
+            print(f"transcription start: {stt_start:.2f}s")
+            print(f"transcription end: {stt_end:.2f}s")
+            print(f"transcription duration: {stt_end - stt_start:.2f}s")
+            
+            if not res.get('success'):
+                print(f"raw transcript: N/A")
+                print(f"confidence: 0.0000")
+                print("[VOICE] RESULT: CAPTURE_FAILED")
                 return None
+                
+            raw = res['text']
+            confidence = res['confidence']
+            print(f"raw transcript: {raw!r}")
+            print(f"confidence: {confidence:.4f}")
+            
+            # Read config gates
+            confidence_threshold = float(os.getenv("VOICE_CONFIDENCE_THRESHOLD", "0.4"))
+            
+            if not raw or not raw.strip():
+                print("[VOICE] RESULT: STT_EMPTY_TRANSCRIPT")
+                return None
+                
+            if confidence < confidence_threshold:
+                print("[VOICE] RESULT: STT_LOW_CONFIDENCE")
+                # Trigger speak out loud
+                try:
+                    from voice_output import VoiceOutput
+                    VO = VoiceOutput()
+                    VO.speak("Sorry, I didn't catch that clearly, can you repeat?")
+                except Exception as tts_err:
+                    logger.warning(f"[VOICE] Failed to speak fallback error: {tts_err}")
+                return None
+
+            print("[VOICE] RESULT: STT_SUCCESS")
 
             # Clean and normalize text transcript
             norm_start = time.time()
