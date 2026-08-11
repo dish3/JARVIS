@@ -386,6 +386,7 @@ def run_voice_debug_mode() -> None:
     import os
     import sys
     import logging
+    import datetime
     import soundfile as sf
     from voice_listener import listen_ptt, _get_voice_listener, _select_mic_device
     from voice.utils import calculate_audio_stats
