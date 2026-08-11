@@ -4,6 +4,7 @@ import os
 import threading
 import queue
 import time
+import datetime
 
 # Fix encoding for Windows console - must be first
 if sys.platform == 'win32':

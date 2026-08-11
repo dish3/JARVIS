@@ -146,11 +146,14 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
         
     raw_frames = []
     frames = []
+    callback_count = 0
     
     def audio_callback(indata, frame_count, time_info, status):
+        nonlocal callback_count
         if status:
             logger.warning(f"[VOICE] Audio callback status: {status}")
         raw_frames.append(indata.copy())
+        callback_count += 1
 
     # Wait if TTS is speaking to prevent microphone loopback feedback
     from voice_output import is_tts_speaking
@@ -209,7 +212,7 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
                                 dtype='float32',
                                 device=selected_mic,
                                 callback=audio_callback,
-                                blocksize=4096):
+                                blocksize=4096) as stream:
                 
                 chunk_duration = 4096 / SAMPLE_RATE
                 while True:
@@ -231,6 +234,7 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
                                 # Prepend pre-roll buffer to final frames
                                 frames.extend(detector.preroll_buffer)
                                 speech_started = True
+                                print(f"[CALLBACK_STATUS] 1. VAD speech start: stream active={stream.active}", flush=True)
                             # Append current chunk to speech frames
                             frames.append(chunk)
                         else:
@@ -240,16 +244,24 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
                             detector.preroll_buffer.append(chunk)
                             
                         if should_stop:
+                            print(f"[CALLBACK_STATUS] 2. VAD speech end: stream active={stream.active}", flush=True)
                             stop_loop = True
                             break
                     if stop_loop:
                         break
 
-            logger.info("[VOICE] Stopping capture")
-            logger.info("[VOICE] Waiting for capture buffer flush")
-            sd.sleep(100) # Allow any last frame in progress to complete
-            logger.info("[VOICE] Capture buffer flushed")
-            logger.info("[VOICE] Recording stopped")
+                print(f"[CALLBACK_STATUS] 3. Recording stop begins: stream active={stream.active}", flush=True)
+                logger.info("[VOICE] Stopping capture")
+                print(f"[CALLBACK_STATUS] 4. Before stream.stop(): stream active={stream.active}", flush=True)
+                stream.stop()
+                print(f"[CALLBACK_STATUS] 4. After stream.stop(): stream active={stream.active}", flush=True)
+                print(f"[CALLBACK_STATUS] 5. Before stream.close(): stream active={stream.active}", flush=True)
+                stream.close()
+                print(f"[CALLBACK_STATUS] 5. After stream.close(): stream active={stream.active}", flush=True)
+                logger.info("[VOICE] Waiting for capture buffer flush")
+                sd.sleep(100) # Allow any last frame in progress to complete
+                logger.info("[VOICE] Capture buffer flushed")
+                logger.info("[VOICE] Recording stopped")
 
         recording_duration = time.time() - recording_start
         
@@ -263,9 +275,6 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
         except Exception:
             pass
 
-        # Save all raw frames captured in the final segment to prevent frame loss
-        frames = raw_frames.copy()
-
         # Save stage 1: RAW_CAPTURE
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         os.makedirs("voice_debug", exist_ok=True)
@@ -277,7 +286,9 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
             
         if not frames:
             logger.warning("[VOICE] No audio frames captured in final segment")
-            print("\n[VOICE.CAPTURE] callback_frames: 0  samples: 0")
+            print(f"\n[VOICE.CAPTURE]")
+            print(f"callback_count: {callback_count}")
+            print(f"callback_samples: {callback_count * 4096}")
             print("[VOICE] RESULT: CAPTURE_FAILED")
             return None
 
@@ -285,6 +296,8 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
         audio = np.concatenate(frames, axis=0).flatten()
         stats = calculate_audio_stats(audio, SAMPLE_RATE)
         segment_duration = len(audio) / SAMPLE_RATE
+
+        print(f"[CALLBACK_STATUS] 6. Final WAV construction: stream active={stream.active if 'stream' in locals() else False}", flush=True)
 
         # Save stage 2 & 3: VAD_SEGMENT and WHISPER_INPUT
         vad_wav_path = f"voice_debug/vad_segment_{timestamp}.wav"
@@ -295,10 +308,25 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
         logger.info(f"[VOICE] Saved Whisper input: {whisper_wav_path}")
 
         # VAD Telemetry
-        # Output exactly formatted logs for Task 2
+        print(f"\n[VOICE.CAPTURE]")
+        print(f"callback_count: {callback_count}")
+        print(f"callback_samples: {callback_count * 4096}")
+        
+        print(f"\n[VOICE.VAD]")
+        print(f"frames_received: {callback_count}")
+        print(f"frames_examined: {processed_count}")
+        print(f"frames_consumed: {processed_count - len(frames) if processed_count > len(frames) else 0}")
+        
+        print(f"\n[VOICE.RECORDING]")
+        print(f"frames_saved: {len(frames)}")
+        print(f"samples_saved: {len(audio)}")
+        
+        print(f"\n[VOICE.WAV]")
+        print(f"samples_written: {len(audio)}")
+        print(f"duration_written: {segment_duration:.2f}")
+
+        # Maintain additional templates for diagnostic parsing
         print(f"\n[VOICE.CAPTURE] callback_frames: {len(raw_frames)}  samples: {len(raw_frames) * 4096}")
-        print(f"[VOICE.VAD]     frames_examined: {processed_count}")
-        print(f"[VOICE.RECORDING] frames_saved: {len(frames)}  samples: {len(audio)}")
         print(f"[VOICE.WAV]     duration: {segment_duration:.2f}s  RMS: {stats['rms']:.6f}")
 
         # Check VAD speech detection state
