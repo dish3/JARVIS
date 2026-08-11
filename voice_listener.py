@@ -363,6 +363,7 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
                 return None
 
             print("[VOICE] RESULT: STT_SUCCESS")
+            print(f"[VOICE] STT result: {raw}", flush=True)
 
             # Clean and normalize text transcript
             norm_start = time.time()

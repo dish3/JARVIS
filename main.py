@@ -49,6 +49,8 @@ def _run_task(orchestrator: Orchestrator, goal: str, is_voice: bool = False) -> 
         _result_queue.put(('[TASK RUNNING]', goal))
         import time
         start_exec = time.time()
+        if is_voice:
+            print(f"[VOICE] orchestrator received: {goal}", flush=True)
         result = orchestrator.process_goal(goal, is_voice=is_voice)
         exec_duration = time.time() - start_exec
         if is_voice:
@@ -69,6 +71,8 @@ def submit_goal(orchestrator: Orchestrator, goal: str, is_voice: bool = False) -
     """
     Queue a goal for sequential processing by the background worker.
     """
+    if is_voice:
+        print(f"[VOICE] command submitted: {goal}", flush=True)
     _task_queue.put((goal, is_voice))
 
 
@@ -207,6 +211,8 @@ def _voice_listen_once(orchestrator: Orchestrator, tts=None) -> None:
         if not goal or not goal.strip():
             _emit('[VOICE]', 'No speech detected')
             return
+
+        print(f"[VOICE] main received: {goal}", flush=True)
 
         if goal == '__CANCEL__':
             cancel_current_task()
