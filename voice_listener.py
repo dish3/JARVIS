@@ -213,7 +213,6 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
                                 device=selected_mic,
                                 callback=audio_callback,
                                 blocksize=4096) as stream:
-                
                 chunk_duration = 4096 / SAMPLE_RATE
                 while True:
                     if stop_event and stop_event.is_set():
@@ -231,17 +230,8 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
                         
                         if detector.has_spoken:
                             if not speech_started:
-                                # Prepend pre-roll buffer to final frames
-                                frames.extend(detector.preroll_buffer)
                                 speech_started = True
                                 print(f"[CALLBACK_STATUS] 1. VAD speech start: stream active={stream.active}", flush=True)
-                            # Append current chunk to speech frames
-                            frames.append(chunk)
-                        else:
-                            # Not speaking yet, maintain pre-roll buffer in detector
-                            if len(detector.preroll_buffer) >= detector.preroll_chunks:
-                                detector.preroll_buffer.pop(0)
-                            detector.preroll_buffer.append(chunk)
                             
                         if should_stop:
                             print(f"[CALLBACK_STATUS] 2. VAD speech end: stream active={stream.active}", flush=True)
@@ -275,6 +265,9 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
         except Exception:
             pass
 
+        # Save all raw frames captured in the final segment
+        frames = raw_frames.copy()
+
         # Save stage 1: RAW_CAPTURE
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         os.makedirs("voice_debug", exist_ok=True)
@@ -295,15 +288,29 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
         # Convert final segment to numpy array
         audio = np.concatenate(frames, axis=0).flatten()
         stats = calculate_audio_stats(audio, SAMPLE_RATE)
-        segment_duration = len(audio) / SAMPLE_RATE
+        
+        # VAD segment extraction from complete capture using timestamps
+        if detector.speech_start_time is not None:
+            pre_roll_sec = detector.preroll_ms / 1000.0
+            start_sec = max(0, detector.speech_start_time - pre_roll_sec)
+            start_sample = int(start_sec * SAMPLE_RATE)
+            
+            end_sec = detector.speech_end_time if detector.speech_end_time is not None else (len(audio) / SAMPLE_RATE)
+            end_sample = int(end_sec * SAMPLE_RATE)
+            
+            segmented_audio = audio[start_sample:end_sample]
+        else:
+            segmented_audio = audio
+            
+        segment_duration = len(segmented_audio) / SAMPLE_RATE
 
         print(f"[CALLBACK_STATUS] 6. Final WAV construction: stream active={stream.active if 'stream' in locals() else False}", flush=True)
 
         # Save stage 2 & 3: VAD_SEGMENT and WHISPER_INPUT
         vad_wav_path = f"voice_debug/vad_segment_{timestamp}.wav"
         whisper_wav_path = f"voice_debug/whisper_input_{timestamp}.wav"
-        sf.write(vad_wav_path, audio, SAMPLE_RATE)
-        sf.write(whisper_wav_path, audio, SAMPLE_RATE)
+        sf.write(vad_wav_path, segmented_audio, SAMPLE_RATE)
+        sf.write(whisper_wav_path, segmented_audio, SAMPLE_RATE)
         logger.info(f"[VOICE] Saved VAD segment: {vad_wav_path}")
         logger.info(f"[VOICE] Saved Whisper input: {whisper_wav_path}")
 
@@ -315,19 +322,19 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
         print(f"\n[VOICE.VAD]")
         print(f"frames_received: {callback_count}")
         print(f"frames_examined: {processed_count}")
-        print(f"frames_consumed: {processed_count - len(frames) if processed_count > len(frames) else 0}")
+        print(f"frames_consumed: 0")
         
         print(f"\n[VOICE.RECORDING]")
         print(f"frames_saved: {len(frames)}")
         print(f"samples_saved: {len(audio)}")
         
         print(f"\n[VOICE.WAV]")
-        print(f"samples_written: {len(audio)}")
+        print(f"samples_written: {len(segmented_audio)}")
         print(f"duration_written: {segment_duration:.2f}")
 
         # Maintain additional templates for diagnostic parsing
         print(f"\n[VOICE.CAPTURE] callback_frames: {len(raw_frames)}  samples: {len(raw_frames) * 4096}")
-        print(f"[VOICE.WAV]     duration: {segment_duration:.2f}s  RMS: {stats['rms']:.6f}")
+        print(f"[VOICE.WAV]     duration: {segment_duration:.2f}s  RMS: {calculate_audio_stats(segmented_audio, SAMPLE_RATE)['rms']:.6f}")
 
         # Check VAD speech detection state
         if not detector.has_spoken:
@@ -336,12 +343,12 @@ def listen_ptt(hotkey: str = "F9", stop_event=None, use_keyboard: bool = True) -
             return None
 
         # Save copy to voice_debug directory as the primary debug recording
-        save_debug_wav(audio, SAMPLE_RATE)
+        save_debug_wav(segmented_audio, SAMPLE_RATE)
 
         # Transcribe
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
             temp_path = f.name
-            sf.write(temp_path, audio, SAMPLE_RATE)
+            sf.write(temp_path, segmented_audio, SAMPLE_RATE)
 
         try:
             print(f"\n[VOICE.STT]")

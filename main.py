@@ -423,14 +423,15 @@ def run_voice_debug_mode() -> None:
     while True:
         print("\n" + "=" * 40)
         print(" DIAGNOSTIC MENU:")
-        print(" 1. Live microphone test")
-        print(" 2. Replay existing WAV recording")
-        print(" 3. List stored debug recordings")
-        print(" 4. Exit")
+        print(" 1. Automatic VAD microphone test")
+        print(" 2. Manual Start/Stop recording")
+        print(" 3. Replay existing WAV recording")
+        print(" 4. List stored debug recordings")
+        print(" 5. Exit")
         print("=" * 40)
         
-        choice = input("Select an option [1-4]: ").strip()
-        if choice == '4':
+        choice = input("Select an option [1-5]: ").strip()
+        if choice == '5':
             print("Exiting diagnostics.")
             break
             
@@ -445,6 +446,96 @@ def run_voice_debug_mode() -> None:
             print("-" * 40)
             
         elif choice == '2':
+            import sounddevice as sd
+            import soundfile as sf
+            import numpy as np
+            from voice.normalizer import normalize_text
+            
+            print(f"\n[VOICE.MANUAL] Microphone Index: {selected_mic}")
+            print(f"[VOICE.MANUAL] Sample Rate: 16000 Hz")
+            print(f"[VOICE.MANUAL] Channels: 1 (mono)")
+            
+            input("Press ENTER to start recording...")
+            
+            manual_frames = []
+            callback_count = 0
+            
+            def manual_callback(indata, frame_count, time_info, status):
+                nonlocal callback_count
+                manual_frames.append(indata.copy())
+                callback_count += 1
+                
+            stream = sd.InputStream(samplerate=16000,
+                                    channels=1,
+                                    dtype='float32',
+                                    device=selected_mic,
+                                    callback=manual_callback,
+                                    blocksize=4096)
+                                    
+            print("[VOICE.MANUAL] Recording started", flush=True)
+            print("[VOICE.MANUAL] Speak now...", flush=True)
+            stream.start()
+            
+            input("Press ENTER to stop recording...")
+            
+            print("[VOICE.MANUAL] Recording stopped", flush=True)
+            stream.stop()
+            stream.close()
+            time.sleep(0.1) # Wait 100ms for final flush
+            
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            os.makedirs("voice_debug", exist_ok=True)
+            wav_path = f"voice_debug/manual_{timestamp}.wav"
+            
+            if not manual_frames:
+                print("\n[VOICE.MANUAL] callback_frames: 0  samples: 0")
+                print("[VOICE] RESULT: CAPTURE_FAILED")
+                continue
+                
+            audio = np.concatenate(manual_frames, axis=0).flatten()
+            sf.write(wav_path, audio, 16000, subtype='PCM_16')
+            
+            duration = len(audio) / 16000
+            print(f"\n[VOICE.MANUAL]")
+            print(f"callback_frames: {callback_count}")
+            print(f"callback_samples: {callback_count * 4096}")
+            print(f"frames_saved: {len(manual_frames)}")
+            print(f"samples_saved: {len(audio)}")
+            print(f"duration: {duration:.2f}s")
+            
+            # Existing DSP Telemetry
+            stats = calculate_audio_stats(audio, 16000)
+            print("\n--- DSP AUDIO METRICS ---")
+            print(f"  - Sample Count: {len(audio)}")
+            print(f"  - Duration: {duration:.2f} seconds")
+            print(f"  - RMS: {stats['rms']:.6f}")
+            print(f"  - Peak: {stats['peak']:.6f}")
+            print(f"  - Average amplitude: {np.mean(np.abs(audio)):.6f}")
+            print(f"  - Silence percentage: {stats['silence_pct']:.2f}%")
+            print(f"  - Clipping: {stats['clipping']}")
+            
+            # STT Pipeline
+            print("\n--- WHISPER TRANSCRIPTION ---")
+            res = listener.transcriber.transcribe(wav_path)
+            print("-" * 40)
+            if res.get('success'):
+                print(f"Detected Language: {res['detected_lang']} (prob={res['lang_prob']:.4f})")
+                print(f"Whisper Duration: {res['whisper_time']:.3f}s")
+                print(f"Raw Transcript: {res['text']}")
+                print(f"Confidence score: {res['confidence']:.4f} (avg_logprob={res['avg_logprob']:.4f})")
+                
+                if res.get('words'):
+                    print("Word confidences:")
+                    for w, p in res['words']:
+                        print(f"  - '{w}': {p:.4f}")
+                        
+                normalized = normalize_text(res['text'])
+                print(f"Normalized Transcript: {normalized}")
+            else:
+                print(f"Transcription failed: {res.get('error')}")
+            print("-" * 40)
+
+        elif choice == '3':
             debug_dir = "voice_debug"
             if not os.path.exists(debug_dir) or not os.listdir(debug_dir):
                 print(f"\nNo recordings found in '{debug_dir}/' directory.")
@@ -492,7 +583,7 @@ def run_voice_debug_mode() -> None:
             except Exception as e:
                 print(f"[ERROR] Replay failed: {e}")
                 
-        elif choice == '3':
+        elif choice == '4':
             debug_dir = "voice_debug"
             if not os.path.exists(debug_dir) or not os.listdir(debug_dir):
                 print(f"\nNo recordings found in '{debug_dir}/'.")
@@ -505,7 +596,7 @@ def run_voice_debug_mode() -> None:
                     ctime = datetime.datetime.fromtimestamp(os.path.getctime(filepath)).strftime('%Y-%m-%d %H:%M:%S')
                     print(f"  - {f:<25} | Size: {size_kb:>6.1f} KB | Created: {ctime}")
         else:
-            print("[ERROR] Invalid choice. Select 1-4.")
+            print("[ERROR] Invalid choice. Select 1-5.")
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
