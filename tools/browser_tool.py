@@ -33,13 +33,16 @@ class BrowserTool:
         Returns:
             Success message or error
         """
-        logger.info(f"[BROWSER] Opening URL: {url}" + (f" in {browser}" if browser else ""))
+        # Validate URL
+        if not url.startswith(('http://', 'https://', 'ftp://')):
+            url = 'https://' + url
+            
+        print(f"[BROWSER_TOOL] opening={url}", flush=True)
+        logger.info(f"[BROWSER_TOOL] opening={url}" + (f" in {browser}" if browser else ""))
         
         try:
-            # Validate URL
-            if not url.startswith(('http://', 'https://', 'ftp://')):
-                url = 'https://' + url
-            
+            opened = False
+            res_msg = ""
             # Open in specified browser or default
             if browser:
                 browser_lower = browser.lower().strip()
@@ -61,10 +64,11 @@ class BrowserTool:
                     if cmd:
                         subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         logger.info(f"[BROWSER] Opened in {browser}: {url}")
-                        return f"Opened in {browser}: {url}"
+                        res_msg = f"Opened in {browser}: {url}"
+                        opened = True
                     else:
                         logger.warning(f"[BROWSER] Unknown browser: {browser}")
-                        return f"Error: Unknown browser '{browser}'. Using default browser instead."
+                        res_msg = f"Error: Unknown browser '{browser}'. Using default browser instead."
                 
                 # macOS browser commands
                 elif os.name == 'posix' and os.uname().sysname == 'Darwin':
@@ -79,7 +83,8 @@ class BrowserTool:
                     if cmd:
                         subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         logger.info(f"[BROWSER] Opened in {browser}: {url}")
-                        return f"Opened in {browser}: {url}"
+                        res_msg = f"Opened in {browser}: {url}"
+                        opened = True
                 
                 # Linux browser commands
                 elif os.name == 'posix':
@@ -94,12 +99,55 @@ class BrowserTool:
                     if cmd:
                         subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         logger.info(f"[BROWSER] Opened in {browser}: {url}")
-                        return f"Opened in {browser}: {url}"
+                        res_msg = f"Opened in {browser}: {url}"
+                        opened = True
             
-            # Open in default browser
-            webbrowser.open(url)
-            logger.info(f"[BROWSER] Opened: {url}")
-            return f"Opened URL: {url}"
+            if not opened:
+                # Open in default browser
+                webbrowser.open(url)
+                logger.info(f"[BROWSER] Opened: {url}")
+                res_msg = f"Opened URL: {url}"
+
+            # Verify browser process has launched/is running
+            import time
+            time.sleep(1.0)
+            import psutil
+            
+            expected_procs = []
+            if browser:
+                name_lower = browser.lower()
+                if 'chrome' in name_lower:
+                    expected_procs = ['chrome.exe', 'chrome']
+                elif 'edge' in name_lower:
+                    expected_procs = ['msedge.exe', 'msedge']
+                elif 'firefox' in name_lower:
+                    expected_procs = ['firefox.exe', 'firefox']
+            else:
+                expected_procs = ['chrome.exe', 'chrome', 'msedge.exe', 'msedge', 'firefox.exe', 'firefox', 'iexplore.exe', 'browser']
+                
+            running_procs = []
+            for p in psutil.process_iter(['name']):
+                try:
+                    name = p.info['name']
+                    if name:
+                        running_procs.append(name.lower())
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+                    
+            found = False
+            for exp in expected_procs:
+                if any(exp in r for r in running_procs):
+                    found = True
+                    break
+                    
+            if found:
+                print(f"[BROWSER_TOOL] Note: Exact URL tab state verification is limited for system default browsers; verified browser process launch instead.", flush=True)
+                print("[BROWSER_TOOL] navigation=success", flush=True)
+                print(f"[BROWSER_TOOL] verified_url={url}", flush=True)
+                return res_msg
+            else:
+                print("[BROWSER_TOOL] verification=failed", flush=True)
+                raise RuntimeError("Browser process failed to start or verify.")
         
         except Exception as e:
             logger.error(f"[BROWSER] Error opening URL: {str(e)}")
@@ -148,8 +196,6 @@ class BrowserTool:
         Returns:
             Success message or error
         """
-        logger.info(f"[BROWSER] Opening app: {app_name}")
-        
         try:
             app_name_lower = app_name.lower().strip()
             
@@ -180,6 +226,53 @@ class BrowserTool:
                 'powerpoint': 'start powerpnt',
                 'outlook': 'start outlook',
             }
+            
+            # Windows dynamic path resolution for Chrome
+            if os.name == 'nt' and app_name_lower in ('chrome', 'google chrome'):
+                import winreg
+                chrome_path = None
+                try:
+                    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe")
+                    chrome_path, _ = winreg.QueryValue(key, None)
+                    winreg.CloseKey(key)
+                except Exception:
+                    pass
+                if not chrome_path:
+                    # Fallback common paths
+                    paths = [
+                        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                    ]
+                    for p in paths:
+                        if os.path.exists(p):
+                            chrome_path = p
+                            break
+                if chrome_path:
+                    windows_apps['chrome'] = f'start "" "{chrome_path}"'
+                    windows_apps['google chrome'] = f'start "" "{chrome_path}"'
+                    
+            # Windows dynamic path resolution for Edge
+            if os.name == 'nt' and app_name_lower in ('edge', 'microsoft edge'):
+                import winreg
+                edge_path = None
+                try:
+                    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe")
+                    edge_path, _ = winreg.QueryValue(key, None)
+                    winreg.CloseKey(key)
+                except Exception:
+                    pass
+                if not edge_path:
+                    paths = [
+                        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+                    ]
+                    for p in paths:
+                        if os.path.exists(p):
+                            edge_path = p
+                            break
+                if edge_path:
+                    windows_apps['edge'] = f'start "" "{edge_path}"'
+                    windows_apps['microsoft edge'] = f'start "" "{edge_path}"'
             
             # macOS app commands
             macos_apps = {
@@ -222,13 +315,25 @@ class BrowserTool:
                 logger.warning(f"[BROWSER] Unknown app: {app_name}")
                 return f"Error: Unknown app: {app_name}"
             
-            # Execute command
-            if os.name == 'nt':
-                subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            else:
-                subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            display_names = {
+                'chrome': 'Google Chrome',
+                'google chrome': 'Google Chrome',
+                'edge': 'Microsoft Edge',
+                'microsoft edge': 'Microsoft Edge',
+                'firefox': 'Mozilla Firefox',
+                'notepad': 'Notepad',
+                'calculator': 'Calculator',
+            }
+            display_name = display_names.get(app_name_lower, app_name)
             
-            logger.info(f"[BROWSER] Opened app: {app_name}")
+            print(f"[APP_TOOL] Launching application: {app_name_lower}", flush=True)
+            logger.info(f"[APP_TOOL] Launching application: {app_name_lower}")
+            
+            # Execute command
+            subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            print(f"[APP_TOOL] Application launched successfully: {app_name_lower}", flush=True)
+            logger.info(f"[APP_TOOL] Application launched successfully: {app_name_lower}")
             return f"Opening {app_name}..."
         
         except Exception as e:

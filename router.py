@@ -194,34 +194,70 @@ class Router:
                 
                 # Check if browser is specified (group 3 is not None) or not
                 if len(groups) >= 3 and groups[2] is not None:
-                    url = groups[1].strip()
+                    target = groups[1].strip()
                     browser = groups[2].strip()
                 else:
-                    url = groups[1].strip()
+                    target = groups[1].strip()
                     browser = None
+                
+                target_lower = target.lower().strip()
+                
+                # APPLICATIONS list for application-vs-URL classification
+                APPLICATIONS = {'chrome', 'google chrome', 'edge', 'microsoft edge', 'firefox', 'mozilla firefox', 'notepad', 'calculator'}
+                
+                if target_lower in APPLICATIONS:
+                    # Clean up application name mapping
+                    app_mapped = target_lower
+                    if 'chrome' in target_lower:
+                        app_mapped = 'chrome'
+                    elif 'edge' in target_lower:
+                        app_mapped = 'edge'
+                    elif 'firefox' in target_lower:
+                        app_mapped = 'firefox'
+                        
+                    print(f"[ROUTER] Application command detected: {app_mapped}", flush=True)
+                    logger.info(f"[ROUTER] Application command detected: {app_mapped}")
+                    return {
+                        'is_command': True,
+                        'command_type': 'browser',
+                        'action': 'open_app',
+                        'classification': 'application',
+                        'parameters': {'application': app_mapped},
+                        'confidence': 0.95,
+                    }
+                
+                # Common domain names
+                domain_map = {
+                    'youtube': 'youtube.com',
+                    'google': 'google.com',
+                    'github': 'github.com',
+                    'stackoverflow': 'stackoverflow.com',
+                    'reddit': 'reddit.com',
+                    'twitter': 'twitter.com',
+                    'facebook': 'facebook.com',
+                    'instagram': 'instagram.com',
+                    'linkedin': 'linkedin.com',
+                }
+                
+                is_website = False
+                url = target
+                if '.' not in target and not target.startswith(('http://', 'https://')):
+                    if target_lower in domain_map:
+                        url = domain_map[target_lower]
+                        is_website = True
                 
                 # Add protocol if missing
                 if not url.startswith(('http://', 'https://', 'ftp://')):
-                    # Handle common domain names
-                    domain_map = {
-                        'youtube': 'youtube.com',
-                        'google': 'google.com',
-                        'github': 'github.com',
-                        'stackoverflow': 'stackoverflow.com',
-                        'reddit': 'reddit.com',
-                        'twitter': 'twitter.com',
-                        'facebook': 'facebook.com',
-                        'instagram': 'instagram.com',
-                        'linkedin': 'linkedin.com',
-                    }
-                    
-                    # Check if it's a known domain
-                    for key, domain in domain_map.items():
-                        if url.lower() == key or url.lower().startswith(key + ' '):
-                            url = domain
-                            break
-                    
                     url = 'https://' + url
+                    
+                if is_website:
+                    print(f"[ROUTER] Website command detected: {target_lower}", flush=True)
+                    logger.info(f"[ROUTER] Website command detected: {target_lower}")
+                    classification = 'website'
+                else:
+                    print(f"[ROUTER] URL command detected: {url}", flush=True)
+                    logger.info(f"[ROUTER] URL command detected: {url}")
+                    classification = 'explicit url'
                 
                 params = {'url': url}
                 if browser:
@@ -231,6 +267,7 @@ class Router:
                     'is_command': True,
                     'command_type': 'browser',
                     'action': 'open',
+                    'classification': classification,
                     'parameters': params,
                     'confidence': 0.9,
                 }

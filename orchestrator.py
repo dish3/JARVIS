@@ -159,6 +159,15 @@ class Orchestrator:
                 router_action = route_result.get('action', '')
                 if router_action:
                     parameters['action'] = router_action
+                    
+                if tool_type == 'browser':
+                    if router_action == 'open_app':
+                        app_name = parameters.get('application', '')
+                        print(f"[ORCHESTRATOR] Launching application: {app_name}", flush=True)
+                        logger.info(f"[ORCHESTRATOR] Launching application: {app_name}")
+                    elif router_action == 'open':
+                        print(f"[ORCHESTRATOR] Opening website: {parameters.get('url', '')}", flush=True)
+                        logger.info(f"[ORCHESTRATOR] Opening website: {parameters.get('url', '')}")
                 
                 if 'file' in tool_type:
                     # Fallback: guess from command_type if action not set
@@ -305,7 +314,7 @@ class Orchestrator:
                             expected_procs.append('firefox.exe')
                     else:
                         # Fallback list of common browsers
-                        expected_procs = ['chrome.exe', 'msedge.exe', 'firefox.exe', 'browser']
+                        expected_procs = ['chrome.exe', 'chrome', 'msedge.exe', 'msedge', 'firefox.exe', 'firefox', 'browser']
 
                     # Scan processes
                     running_procs = []
@@ -324,18 +333,56 @@ class Orchestrator:
                             break
 
                     if not found:
+                        print("[BROWSER_TOOL] verification=failed", flush=True)
+                        print("[ORCHESTRATOR] result=failed", flush=True)
                         return {
                             'success': False,
                             'error': f"Browser process not found. Expected: {expected_procs}"
                         }
+                    
+                    print("[ORCHESTRATOR] verification=success", flush=True)
+                    return {'success': True}
 
-                    # Optional: Verify active window matches browser
-                    try:
-                        import pyautogui
-                        active_win = pyautogui.getActiveWindowTitle() or ""
-                        logger.info(f"[VERIFY] Browser open active window: '{active_win}'")
-                    except Exception as e:
-                        logger.warning(f"Could not check active window: {e}")
+                elif action == 'open_app':
+                    time.sleep(1.0)
+                    app_name = parameters.get('application', '').lower().strip()
+                    app_procs = {
+                        'chrome': ['chrome.exe', 'chrome'],
+                        'google chrome': ['chrome.exe', 'chrome'],
+                        'edge': ['msedge.exe', 'msedge'],
+                        'microsoft edge': ['msedge.exe', 'msedge'],
+                        'firefox': ['firefox.exe', 'firefox'],
+                        'notepad': ['notepad.exe', 'notepad'],
+                        'calculator': ['calc.exe', 'calculatorapp.exe', 'calculator.exe', 'calculator'],
+                    }
+                    expected_procs = app_procs.get(app_name, [app_name])
+                    
+                    running_procs = []
+                    for p in psutil.process_iter(['name']):
+                        try:
+                            name = p.info['name']
+                            if name:
+                                running_procs.append(name.lower())
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            continue
+                            
+                    found = False
+                    for exp in expected_procs:
+                        if any(exp in r for r in running_procs):
+                            found = True
+                            break
+                            
+                    if not found:
+                        print("[APP_TOOL] verification=failed", flush=True)
+                        print("[ORCHESTRATOR] result=failed", flush=True)
+                        return {
+                            'success': False,
+                            'error': f"Application process not found. Expected: {expected_procs}"
+                        }
+                    
+                    print("[APP_TOOL] verification=success", flush=True)
+                    print("[ORCHESTRATOR] verification=success", flush=True)
+                    return {'success': True}
 
             elif tool_type in ('vscode', 'code'):
                 action = parameters.get('action')
@@ -415,6 +462,11 @@ class Orchestrator:
                 if action == 'open':
                     browser = parameters.get('browser', None)
                     result = tool.open_url(parameters.get('url', ''), browser=browser)
+                elif action == 'open_app':
+                    app_name = parameters.get('application', '')
+                    print(f"[ORCHESTRATOR] Launching application: {app_name}", flush=True)
+                    logger.info(f"[ORCHESTRATOR] Launching application: {app_name}")
+                    result = tool.open_app(app_name)
                 elif action == 'search':
                     result = tool.search(parameters.get('query', ''))
                 elif action == 'generate_image':
